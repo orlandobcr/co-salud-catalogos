@@ -29,9 +29,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import reps, sispro, socrata
+from ._envfile import load_env
 from .io import hash_entries, write_catalog
 from .schema import CatalogFile, CatalogMetadata
 from .sources import REGISTRY, CatalogSource, find
+
+# Carga `.env` lo más pronto posible (antes de leer ProxyConfig.from_env).
+load_env()
 
 
 def catalogs_root() -> Path:
@@ -80,6 +84,8 @@ def sync_one(
     dry_run: bool = False,
     verbose: bool = True,
     consent: bool = False,
+    write_json: bool = True,
+    db_sink=None,
 ) -> dict:
     """Sincroniza un solo catálogo. Devuelve un dict de resultado para el CLI."""
     out_path = catalogs_root() / src.output_path
@@ -160,26 +166,52 @@ def sync_one(
             "duration_s": round(time.perf_counter() - started, 2),
         }
 
-    write_catalog(out_path, catalog)
-    return {
+    sinks_used: list[str] = []
+    if write_json:
+        write_catalog(out_path, catalog)
+        sinks_used.append("json")
+    db_error: str | None = None
+    if db_sink is not None:
+        try:
+            db_sink.write_catalog(catalog)
+            sinks_used.append("db")
+        except Exception as e:
+            db_error = str(e)
+
+    result = {
         "name": src.name,
         "kind": src.kind,
         "rows": len(entries),
-        "path": str(out_path),
         "version": version,
         "sha256_short": (metadata.sha256 or "")[:12],
         "duration_s": round(time.perf_counter() - started, 2),
+        "sinks": sinks_used,
     }
+    if write_json:
+        result["path"] = str(out_path)
+    if db_error:
+        result["db_error"] = db_error
+    return result
 
 
-def sync_all(*, kind: str | None = None, dry_run: bool = False, consent: bool = False) -> list[dict]:
+def sync_all(
+    *,
+    kind: str | None = None,
+    dry_run: bool = False,
+    consent: bool = False,
+    write_json: bool = True,
+    db_sink=None,
+) -> list[dict]:
     results: list[dict] = []
     for src in REGISTRY:
         if kind is not None and src.kind != kind:
             continue
         if src.kind == "manual":
             continue
-        results.append(sync_one(src, dry_run=dry_run, consent=consent))
+        results.append(sync_one(
+            src, dry_run=dry_run, consent=consent,
+            write_json=write_json, db_sink=db_sink,
+        ))
     return results
 
 
@@ -205,7 +237,34 @@ def main(argv: list[str] | None = None) -> int:
             "Solo para corridas manuales documentadas — nunca en cron."
         ),
     )
+    ap.add_argument(
+        "--db",
+        help=(
+            "URL SQLAlchemy del motor destino. Si se especifica, escribe los "
+            "catálogos a la DB además de (o en lugar de) los JSON. "
+            "Ejemplos: postgresql+psycopg://u:p@h/db, mysql+pymysql://u:p@h/db, "
+            "mssql+pyodbc://u:p@h/db?driver=ODBC+Driver+18+for+SQL+Server, "
+            "sqlite:///./salud.db"
+        ),
+    )
+    ap.add_argument(
+        "--no-write-json",
+        dest="no_write_json",
+        action="store_true",
+        help="No escribir archivos JSON en disco. Requiere --db.",
+    )
     args = ap.parse_args(argv)
+
+    write_json = not args.no_write_json
+    if args.no_write_json and not args.db:
+        print("error: --no-write-json requiere --db", file=sys.stderr)
+        return 2
+
+    db_sink = None
+    if args.db:
+        from .db import make_sink
+        db_sink = make_sink(args.db)
+        db_sink.ensure_schema()
 
     if args.list:
         print(f"  {'NAME':30s}  {'KIND':13s}  {'SOURCE_ID':30s}  PATH")
@@ -220,10 +279,19 @@ def main(argv: list[str] | None = None) -> int:
         if src is None:
             print(f"catálogo desconocido: {args.catalog}", file=sys.stderr)
             return 2
-        result = sync_one(src, dry_run=args.dry_run, consent=args.consent)
+        result = sync_one(
+            src, dry_run=args.dry_run, consent=args.consent,
+            write_json=write_json, db_sink=db_sink,
+        )
         results = [result]
     else:
-        results = sync_all(kind=args.kind, dry_run=args.dry_run, consent=args.consent)
+        results = sync_all(
+            kind=args.kind, dry_run=args.dry_run, consent=args.consent,
+            write_json=write_json, db_sink=db_sink,
+        )
+
+    if db_sink is not None:
+        db_sink.close()
 
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2))

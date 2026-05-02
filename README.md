@@ -73,10 +73,54 @@ Salida JSON estructurada (para pipelines):
 python -m sync_catalogos.sync --all --json > sync_report.json
 ```
 
+## Persistencia opcional en DB (Postgres / MySQL / MSSQL / Mongo / SQLite)
+
+Por defecto los catálogos se escriben como archivos JSON. Adicionalmente o en lugar de eso, se pueden escribir a una base de datos:
+
+```bash
+# Escribir a Postgres además de JSON
+python -m sync_catalogos.sync --all --db "postgresql+psycopg://user:pass@host:5432/salud"
+
+# Escribir solo a MySQL (sin JSON en disco)
+python -m sync_catalogos.sync --all --db "mysql+pymysql://user:pass@host:3306/salud" --no-write-json
+
+# MSSQL
+python -m sync_catalogos.sync --all --db "mssql+pyodbc://user:pass@host/salud?driver=ODBC+Driver+18+for+SQL+Server"
+
+# MongoDB
+python -m sync_catalogos.sync --all --db "mongodb://user:pass@host:27017/salud"
+
+# SQLite (gratis, sin server)
+python -m sync_catalogos.sync --all --db "sqlite:///./salud.db"
+```
+
+Instalar el driver requerido:
+
+```bash
+uv pip install -e ".[db]"        # solo SQLAlchemy (suficiente para SQLite)
+uv pip install -e ".[postgres]"  # SQLAlchemy + psycopg
+uv pip install -e ".[mysql]"     # SQLAlchemy + pymysql
+uv pip install -e ".[mssql]"     # SQLAlchemy + pyodbc
+uv pip install -e ".[mongo]"     # pymongo
+```
+
+**Esquema (paridad SQL ↔ Mongo):**
+
+| Tabla / Collection | Contenido |
+|--------------------|-----------|
+| `salud_catalog_metadata` | 1 fila/doc por catálogo: `name, source, source_url, version, license, row_count, last_synced, sha256, notes` |
+| `salud_catalog_entries` | N filas/docs por entry: `(catalog_name, idx, data)`. PK compuesta. `data` es JSON nativo (JSONB en Postgres, JSON en MySQL, NVARCHAR(MAX) en MSSQL, BSON en Mongo). |
+
+Estrategia de upsert: `DELETE catalog_entries + INSERT bulk` por catálogo. Atómico dentro de una transacción, idempotente.
+
 ## Variables de entorno
 
 - `SALUD_SOCRATA_APP_TOKEN` — opcional, sube rate limit Socrata de ~1k/h a ~100k/h
-- `SALUD_CATALOGS_ROOT` — directorio destino (default: `./catalogos_co`)
+- `SALUD_CATALOGS_ROOT` — directorio destino de los JSON (default: `./catalogos_co`)
+- `TWOCAPTCHA_API_KEY` — opcional, activa el pool de proxies (ver `docs/proxy.md`)
+- `PROXY_ENABLED` — `true` | `false` (default `false`)
+
+Ver `.env.example` para la lista completa.
 
 ## Estructura de salida
 

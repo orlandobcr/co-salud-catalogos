@@ -14,9 +14,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import httpx
+from .proxy import make_http_client
 
 SOCRATA_BASE = "https://www.datos.gov.co/resource"
+SOCRATA_HOST = "www.datos.gov.co"
 SOCRATA_PAGE_SIZE = 50_000
 USER_AGENT = "co-salud-catalogos/0.1 (Colombia public health catalogs sync)"
 
@@ -40,36 +41,36 @@ def fetch_all(
     url = f"{SOCRATA_BASE}/{dataset_id}.json"
     out: list[dict[str, Any]] = []
     offset = 0
-    with httpx.Client(timeout=120, headers=_headers()) as c:
-        while True:
-            params = {
-                "$limit": str(page_size),
-                "$offset": str(offset),
-                "$order": ":id",
-            }
-            if where:
-                params["$where"] = where
-            r = c.get(url, params=params)
-            r.raise_for_status()
-            page = r.json()
-            if not page:
-                break
-            out.extend(page)
-            if progress_cb is not None:
-                progress_cb(len(out))
-            if len(page) < page_size:
-                break
-            offset += page_size
+    cli = make_http_client(SOCRATA_HOST, timeout=120, headers=_headers())
+    while True:
+        params = {
+            "$limit": str(page_size),
+            "$offset": str(offset),
+            "$order": ":id",
+        }
+        if where:
+            params["$where"] = where
+        r = cli.get(url, params=params)
+        r.raise_for_status()
+        page = r.json()
+        if not page:
+            break
+        out.extend(page)
+        if progress_cb is not None:
+            progress_cb(len(out))
+        if len(page) < page_size:
+            break
+        offset += page_size
     return out
 
 
 def metadata_view(dataset_id: str) -> dict[str, Any]:
     """Metadata del dataset (`rowsUpdatedAt`, etc.)."""
     url = f"https://www.datos.gov.co/api/views/{dataset_id}.json"
-    with httpx.Client(timeout=30, headers=_headers()) as c:
-        r = c.get(url)
-        r.raise_for_status()
-        return r.json()
+    cli = make_http_client(SOCRATA_HOST, timeout=30, headers=_headers())
+    r = cli.get(url)
+    r.raise_for_status()
+    return r.json()
 
 
 def remote_version(dataset_id: str) -> str | None:

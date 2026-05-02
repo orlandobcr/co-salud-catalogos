@@ -35,11 +35,12 @@ import logging
 import re
 from typing import Any, Callable
 
-import httpx
+from .proxy import HttpClient, make_http_client
 
 log = logging.getLogger(__name__)
 
 REPS_BASE = "https://prestadores.minsalud.gov.co"
+REPS_HOST = "prestadores.minsalud.gov.co"
 WORK_URL = f"{REPS_BASE}/habilitacion/work.aspx"
 CONSULTAS_BASE = f"{REPS_BASE}/habilitacion/consultas/"
 
@@ -48,7 +49,7 @@ GUEST_PASS = "invitado"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Anonimiz/0.1 (Kashport)"
+    "(KHTML, like Gecko) co-salud-catalogos/0.1"
 )
 
 CSV_SEPARATOR = ";"
@@ -71,19 +72,19 @@ def _state(html: str) -> dict[str, str]:
     }
 
 
-def _client() -> httpx.Client:
-    return httpx.Client(
-        timeout=httpx.Timeout(connect=30.0, read=600.0, write=60.0, pool=30.0),
+def _client() -> HttpClient:
+    return make_http_client(
+        REPS_HOST,
+        timeout=600.0,
         headers={
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "es-CO,es;q=0.9",
         },
-        follow_redirects=True,
     )
 
 
-def login(c: httpx.Client) -> None:
+def login(c: HttpClient) -> None:
     """POST guest credentials and populate session cookie on the client."""
     r = c.get(WORK_URL)
     r.raise_for_status()
@@ -103,7 +104,7 @@ def login(c: httpx.Client) -> None:
         raise RuntimeError("REPS login did not set ASP.NET_SessionId cookie")
 
 
-def _search(c: httpx.Client, url: str, html: str) -> str:
+def _search(c: HttpClient, url: str, html: str) -> str:
     """POST the unfiltered search; return new HTML with refreshed tokens."""
     payload = {
         "__EVENTTARGET": "",
@@ -117,7 +118,7 @@ def _search(c: httpx.Client, url: str, html: str) -> str:
     return r.text
 
 
-def _export(c: httpx.Client, url: str, html: str) -> bytes:
+def _export(c: HttpClient, url: str, html: str) -> bytes:
     """POST the ibText button; return the raw CSV bytes."""
     payload = {
         "__EVENTTARGET": "",
@@ -158,13 +159,13 @@ def fetch_export(endpoint: str, *, progress_cb: ProgressCb = None) -> list[dict[
     prepends `CONSULTAS_BASE`.
     """
     url = endpoint if endpoint.startswith("http") else CONSULTAS_BASE + endpoint
-    with _client() as c:
-        login(c)
-        r = c.get(url, headers={"Referer": WORK_URL})
-        r.raise_for_status()
-        html = r.text
-        html = _search(c, url, html)
-        raw = _export(c, url, html)
+    c = _client()
+    login(c)
+    r = c.get(url, headers={"Referer": WORK_URL})
+    r.raise_for_status()
+    html = r.text
+    html = _search(c, url, html)
+    raw = _export(c, url, html)
     return _parse_csv(raw, progress_cb=progress_cb)
 
 

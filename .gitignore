@@ -11,6 +11,13 @@ dist/
 # Caches
 .ruff_cache/
 
+# Secretos / config local — NUNCA commitear credenciales
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
 # OS
 .DS_Store
 

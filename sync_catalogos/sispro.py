@@ -24,12 +24,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from lxml import html as lxml_html
+
+from .proxy import make_http_client
 
 log = logging.getLogger(__name__)
 
 SISPRO_BASE = "https://web.sispro.gov.co"
+SISPRO_HOST = "web.sispro.gov.co"
 SISPRO_PATH = "/WebPublico/Consultas/ConsultarDetalleReferenciaBasica.aspx"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
@@ -134,60 +136,60 @@ def fetch_all(code: str, *, page_size: int = DEFAULT_PAGE_SIZE, progress_cb=None
         "Accept-Encoding": "gzip, deflate, br",
     }
 
-    with httpx.Client(timeout=120, headers=headers, follow_redirects=True) as c:
-        # ---- Step 1: GET initial
-        r = c.get(url)
-        r.raise_for_status()
-        tree = lxml_html.fromstring(r.content)
-        state = _extract_state(tree)
-        total = state.total_items
+    c = make_http_client(SISPRO_HOST, timeout=120, headers=headers)
+    # ---- Step 1: GET initial
+    r = c.get(url)
+    r.raise_for_status()
+    tree = lxml_html.fromstring(r.content)
+    state = _extract_state(tree)
+    total = state.total_items
 
-        # ---- Step 2: POST to set page size
-        post_headers = {
-            **headers,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Origin": SISPRO_BASE,
-            "Referer": url,
-        }
-        payload_resize = {
-            **_base_payload(state, code),
-            "__EVENTTARGET": PAGE_SIZE_NAME,
-            "__EVENTARGUMENT": "",
-            PAGE_SIZE_NAME: str(page_size),
-        }
-        r = c.post(url, data=payload_resize, headers=post_headers)
-        r.raise_for_status()
-        tree = lxml_html.fromstring(r.content)
-        state = _extract_state(tree)
+    # ---- Step 2: POST to set page size
+    post_headers = {
+        **headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": SISPRO_BASE,
+        "Referer": url,
+    }
+    payload_resize = {
+        **_base_payload(state, code),
+        "__EVENTTARGET": PAGE_SIZE_NAME,
+        "__EVENTARGUMENT": "",
+        PAGE_SIZE_NAME: str(page_size),
+    }
+    r = c.post(url, data=payload_resize, headers=post_headers)
+    r.raise_for_status()
+    tree = lxml_html.fromstring(r.content)
+    state = _extract_state(tree)
 
-        # ---- Step 3: parse first page rows
-        rows = _parse_rows(tree, state.columns)
-        if progress_cb is not None:
-            progress_cb(len(rows))
-        all_rows = list(rows)
+    # ---- Step 3: parse first page rows
+    rows = _parse_rows(tree, state.columns)
+    if progress_cb is not None:
+        progress_cb(len(rows))
+    all_rows = list(rows)
 
-        # ---- Step 4: paginate while there are more pages
-        if total and len(all_rows) < total:
-            page = 2
-            max_pages = (total + page_size - 1) // page_size
-            while page <= max_pages and len(all_rows) < total:
-                payload_page = {
-                    **_base_payload(state, code),
-                    "__EVENTTARGET": GRID_NAME,
-                    "__EVENTARGUMENT": f"Page${page}",
-                    PAGE_SIZE_NAME: str(page_size),
-                }
-                r = c.post(url, data=payload_page, headers=post_headers)
-                r.raise_for_status()
-                tree = lxml_html.fromstring(r.content)
-                state = _extract_state(tree)
-                rows = _parse_rows(tree, state.columns)
-                if not rows:
-                    log.warning("anonimiz.sispro.empty_page", extra={"code": code, "page": page})
-                    break
-                all_rows.extend(rows)
-                if progress_cb is not None:
-                    progress_cb(len(all_rows))
-                page += 1
+    # ---- Step 4: paginate while there are more pages
+    if total and len(all_rows) < total:
+        page = 2
+        max_pages = (total + page_size - 1) // page_size
+        while page <= max_pages and len(all_rows) < total:
+            payload_page = {
+                **_base_payload(state, code),
+                "__EVENTTARGET": GRID_NAME,
+                "__EVENTARGUMENT": f"Page${page}",
+                PAGE_SIZE_NAME: str(page_size),
+            }
+            r = c.post(url, data=payload_page, headers=post_headers)
+            r.raise_for_status()
+            tree = lxml_html.fromstring(r.content)
+            state = _extract_state(tree)
+            rows = _parse_rows(tree, state.columns)
+            if not rows:
+                log.warning("sispro.empty_page", extra={"code": code, "page": page})
+                break
+            all_rows.extend(rows)
+            if progress_cb is not None:
+                progress_cb(len(all_rows))
+            page += 1
 
-        return all_rows, total
+    return all_rows, total

@@ -37,3 +37,21 @@ class CatalogFile:
             "metadata": self.metadata.to_dict(),
             "entries": self.entries,
         }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "CatalogFile":
+        meta_raw = raw.get("metadata", {}) or {}
+        meta = CatalogMetadata(
+            name=meta_raw.get("name", ""),
+            description=meta_raw.get("description", ""),
+            source=meta_raw.get("source", "manual"),
+            source_url=meta_raw.get("source_url", ""),
+            source_id=meta_raw.get("source_id"),
+            version=meta_raw.get("version"),
+            license=meta_raw.get("license", ""),
+            row_count=meta_raw.get("row_count"),
+            last_synced=meta_raw.get("last_synced"),
+            sha256=meta_raw.get("sha256"),
+            notes=meta_raw.get("notes", ""),
+        )
+        return cls(metadata=meta, entries=raw.get("entries") or [])
