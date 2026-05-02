@@ -126,7 +126,13 @@ def _base_payload(state: PageState, code: str) -> dict[str, str]:
     }
 
 
-def fetch_all(code: str, *, page_size: int = DEFAULT_PAGE_SIZE, progress_cb=None) -> tuple[list[dict[str, Any]], int | None]:
+def fetch_all(
+    code: str,
+    *,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    progress_cb=None,
+    use_proxy: bool = True,
+) -> tuple[list[dict[str, Any]], int | None]:
     """Fetch all rows of a SISPRO reference table by Code."""
     url = _build_url(code)
     headers = {
@@ -136,7 +142,7 @@ def fetch_all(code: str, *, page_size: int = DEFAULT_PAGE_SIZE, progress_cb=None
         "Accept-Encoding": "gzip, deflate, br",
     }
 
-    c = make_http_client(SISPRO_HOST, timeout=120, headers=headers)
+    c = make_http_client(SISPRO_HOST, timeout=120, headers=headers, use_proxy=use_proxy)
     # ---- Step 1: GET initial
     r = c.get(url)
     r.raise_for_status()

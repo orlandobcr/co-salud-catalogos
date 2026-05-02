@@ -72,7 +72,7 @@ def _state(html: str) -> dict[str, str]:
     }
 
 
-def _client() -> HttpClient:
+def _client(*, use_proxy: bool = False) -> HttpClient:
     return make_http_client(
         REPS_HOST,
         timeout=600.0,
@@ -81,6 +81,7 @@ def _client() -> HttpClient:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "es-CO,es;q=0.9",
         },
+        use_proxy=use_proxy,
     )
 
 
@@ -152,14 +153,19 @@ def _parse_csv(raw: bytes, *, progress_cb: ProgressCb = None) -> list[dict[str, 
     return out
 
 
-def fetch_export(endpoint: str, *, progress_cb: ProgressCb = None) -> list[dict[str, Any]]:
+def fetch_export(
+    endpoint: str,
+    *,
+    progress_cb: ProgressCb = None,
+    use_proxy: bool = False,
+) -> list[dict[str, Any]]:
     """Fetch and parse a REPS consultation page export.
 
     `endpoint` is the page name, e.g. "sedes_reps.aspx" — the function
     prepends `CONSULTAS_BASE`.
     """
     url = endpoint if endpoint.startswith("http") else CONSULTAS_BASE + endpoint
-    c = _client()
+    c = _client(use_proxy=use_proxy)
     login(c)
     r = c.get(url, headers={"Referer": WORK_URL})
     r.raise_for_status()

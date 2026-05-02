@@ -36,12 +36,13 @@ def fetch_all(
     where: str | None = None,
     page_size: int = SOCRATA_PAGE_SIZE,
     progress_cb=None,
+    use_proxy: bool = False,
 ) -> list[dict[str, Any]]:
     """Descarga todas las filas de un dataset Socrata vía $limit/$offset."""
     url = f"{SOCRATA_BASE}/{dataset_id}.json"
     out: list[dict[str, Any]] = []
     offset = 0
-    cli = make_http_client(SOCRATA_HOST, timeout=120, headers=_headers())
+    cli = make_http_client(SOCRATA_HOST, timeout=120, headers=_headers(), use_proxy=use_proxy)
     while True:
         params = {
             "$limit": str(page_size),

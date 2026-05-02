@@ -65,16 +65,36 @@ export PROXY_POOL_SIZE=10             # 1..2000
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `PROXY_ENABLED` | `false` | Activa el pool. Si `false`, todo va directo sin tocar el provider. |
+| `PROXY_USE_FOR_KINDS` | (auto) | CSV de kinds que usan proxy. Si no se setea, solo `sispro_aspx`. Vacío explícito = ninguno. |
 | `PROXY_LIST` | — | Lista CSV de URLs (provider 1) |
 | `PROXY_LIST_URL` | — | Endpoint JSON/texto (provider 2) |
 | `TWOCAPTCHA_API_KEY` | — | API key 2captcha (provider 3) |
 | `PROXY_COUNTRY` | mix | ISO 2-letter (co, us, mx, ...) — solo aplica a 2captcha |
-| `PROXY_PROTOCOL` | `http` | http \| https \| socks5 — aplica a 2captcha |
+| `PROXY_PROTOCOL` | (todos) | http \| https \| socks5 — vacío = los 3, mejor fallback |
 | `PROXY_POOL_SIZE` | 10 | Cantidad de IPs a generar (2captcha, 1..2000) |
 | `PROXY_REFRESH_MINUTES` | 30 | Cada cuánto re-pregunta al provider |
 | `PROXY_FAIL_THRESHOLD` | 3 | Fallos consecutivos antes de cooldown |
 | `PROXY_COOLDOWN_SECONDS` | 300 | Cuánto descansa una IP unhealthy |
-| `PROXY_MAX_ATTEMPTS` | 2 | Cuántos proxies probar antes de fallback a directo |
+| `PROXY_MAX_ATTEMPTS` | 6 | Cuántos proxies probar antes de fallback a directo |
+
+## ¿Qué fuentes usan proxy?
+
+Por **default** solo SISPRO usa el pool. Las otras dos van directo siempre.
+
+| Kind | Default `use_proxy` | Razón |
+|------|---------------------|-------|
+| `socrata` | **false** | API REST pública con app token gratis (`SALUD_SOCRATA_APP_TOKEN`) sube rate de 1k/h a 100k/h |
+| `reps_export` | **false** | Portal público con login `invitado/invitado`, sin restricción |
+| `sispro_aspx` | **true** | `robots.txt: Disallow: /` + sync masivo de 297+ tablas |
+| `manual` | false | n/a |
+
+Override con `PROXY_USE_FOR_KINDS` (CSV):
+```bash
+PROXY_USE_FOR_KINDS=sispro_aspx,reps_export   # añadir REPS al proxy
+PROXY_USE_FOR_KINDS=                          # ninguno (todo directo)
+```
+
+Nota: aunque un kind pida proxy, si `PROXY_ENABLED=false` o no hay provider configurado, el HttpClient va directo igual (sin overhead).
 
 ## Comportamiento esperado
 

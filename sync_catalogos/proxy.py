@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -216,6 +217,16 @@ class TwoCaptchaProvider:
                             log.warning("proxy.2captcha.generate_failed", extra={"protocol": protocol, "data": data})
                             continue
                         for ip_port in data.get("data") or []:
+                            if not isinstance(ip_port, str) or not _is_ip_port(ip_port):
+                                # 2captcha a veces devuelve status:OK pero mete
+                                # mensajes de error de su backend dentro del array
+                                # `data` (ej. ForeignKeyConstraintViolation). Los
+                                # detectamos por shape y los reportamos.
+                                log.warning("proxy.2captcha.invalid_ip_port", extra={
+                                    "value": str(ip_port)[:120],
+                                    "hint": "El backend de 2captcha devolvió un error en lugar de IP:port. Verifica https://2captcha.com/setting/ip-whitelist y https://2captcha.com/proxy",
+                                })
+                                continue
                             if "://" in ip_port:
                                 urls.append(ip_port)
                             else:
@@ -398,6 +409,16 @@ def _safe(url: str) -> str:
     return url
 
 
+_IP_PORT_RE = re.compile(r"^(?:[a-z][a-z0-9+.-]*://)?[\w\-.:%@]+:[0-9]{1,5}(?:/.*)?$", re.IGNORECASE)
+
+
+def _is_ip_port(s: str) -> bool:
+    """Heurística: ¿el string parece un endpoint `[scheme://]host:port`?"""
+    if not s or len(s) > 200:
+        return False
+    return bool(_IP_PORT_RE.match(s.strip()))
+
+
 def _scheme_of(url: str) -> str:
     """Devuelve el scheme de una URL (http, https, socks5)."""
     return url.split("://", 1)[0].lower() if "://" in url else "http"
@@ -574,5 +595,37 @@ def make_http_client(
     *,
     timeout: float = 60.0,
     headers: dict[str, str] | None = None,
+    use_proxy: bool = True,
 ) -> HttpClient:
-    return HttpClient(target_host=target_host, pool=get_pool(), timeout=timeout, headers=headers)
+    """Si `use_proxy=False`, ignora el pool y va directo (mismo wrapper, sin overhead)."""
+    pool = get_pool() if use_proxy else None
+    return HttpClient(target_host=target_host, pool=pool, timeout=timeout, headers=headers)
+
+
+# Defaults por kind: solo SISPRO se beneficia del proxy en práctica
+# (robots.txt restrictivo + sync masivo de cientos de tablas).
+_DEFAULT_USE_PROXY_BY_KIND: dict[str, bool] = {
+    "socrata": False,        # API pública con app token
+    "reps_export": False,    # portal público con login invitado
+    "sispro_aspx": True,     # robots.txt = Disallow:/, mejor distribuir
+    "manual": False,
+}
+
+
+def should_use_proxy_for_kind(kind: str) -> bool:
+    """Decide si un kind de fuente debe usar el pool de proxies.
+
+    Resolución:
+      1. Si `PROXY_USE_FOR_KINDS` está seteado (CSV de kinds), solo esos lo usan.
+         Ej: `PROXY_USE_FOR_KINDS=sispro_aspx,reps_export`.
+      2. Si no, default por kind (`_DEFAULT_USE_PROXY_BY_KIND`).
+    Notas:
+      - Para que se use efectivamente, además debe haber `PROXY_ENABLED=true`
+        y un provider configurado. Si no, el HttpClient va directo igual.
+      - Para forzar todo a directo: `PROXY_USE_FOR_KINDS=` (vacío explícito).
+    """
+    override = os.environ.get("PROXY_USE_FOR_KINDS")
+    if override is not None:
+        wanted = {k.strip() for k in override.split(",") if k.strip()}
+        return kind in wanted
+    return _DEFAULT_USE_PROXY_BY_KIND.get(kind, False)

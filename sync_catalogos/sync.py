@@ -31,6 +31,7 @@ from pathlib import Path
 from . import reps, sispro, socrata
 from ._envfile import load_env
 from .io import hash_entries, write_catalog
+from .proxy import should_use_proxy_for_kind
 from .schema import CatalogFile, CatalogMetadata
 from .sources import REGISTRY, CatalogSource, find
 
@@ -115,6 +116,7 @@ def sync_one(
             sys.stdout.write(f"\r  [{src.name}] {n} filas...")
             sys.stdout.flush()
 
+    use_proxy = should_use_proxy_for_kind(src.kind)
     try:
         if src.kind == "socrata":
             assert src.socrata_dataset_id
@@ -122,6 +124,7 @@ def sync_one(
                 src.socrata_dataset_id,
                 where=src.socrata_extra_query,
                 progress_cb=_progress if verbose else None,
+                use_proxy=use_proxy,
             )
             version = socrata.remote_version(src.socrata_dataset_id)
         elif src.kind == "sispro_aspx":
@@ -130,6 +133,7 @@ def sync_one(
                 src.sispro_code,
                 page_size=src.sispro_page_size,
                 progress_cb=_progress if verbose else None,
+                use_proxy=use_proxy,
             )
             version = _now_iso()
         elif src.kind == "reps_export":
@@ -137,6 +141,7 @@ def sync_one(
             entries = reps.fetch_export(
                 src.reps_endpoint,
                 progress_cb=_progress if verbose else None,
+                use_proxy=use_proxy,
             )
             version = _now_iso()
         else:
