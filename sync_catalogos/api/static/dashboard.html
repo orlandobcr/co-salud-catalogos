@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard · co-salud-catalogos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="/static/favicon.ico" type="image/x-icon" />
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+<!-- Top bar -->
+<header class="bg-white border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div>
+            <h1 class="text-lg font-semibold">co-salud-catalogos</h1>
+            <p class="text-xs text-slate-500">Catálogos públicos del sector salud Colombia</p>
+        </div>
+        <div class="flex items-center gap-3 text-sm">
+            <span class="text-slate-600" id="userBadge"></span>
+            <span id="roleBadge" class="px-2 py-0.5 rounded text-xs font-medium"></span>
+            <a href="/docs" class="text-indigo-600 hover:underline">Swagger</a>
+            <a href="/redoc" class="text-indigo-600 hover:underline">ReDoc</a>
+            <button id="logoutBtn" class="text-red-600 hover:underline">Salir</button>
+        </div>
+    </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-6">
+
+    <!-- Stats top -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="text-xs text-slate-500 uppercase">Catálogos accesibles</div>
+            <div class="text-2xl font-bold text-slate-900 mt-1" id="statCatalogs">—</div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="text-xs text-slate-500 uppercase">Filas totales</div>
+            <div class="text-2xl font-bold text-slate-900 mt-1" id="statRows">—</div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="text-xs text-slate-500 uppercase">Última actualización</div>
+            <div class="text-sm font-bold text-slate-900 mt-1" id="statLastSync">—</div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="text-xs text-slate-500 uppercase">Fuentes</div>
+            <div class="text-2xl font-bold text-slate-900 mt-1" id="statSources">—</div>
+        </div>
+    </section>
+
+    <!-- API consumption info -->
+    <section class="bg-white rounded-lg shadow p-4 mb-6">
+        <h2 class="font-semibold mb-2">Consumo de la API</h2>
+        <div class="text-sm text-slate-600 space-y-2">
+            <div>
+                Token actual (válido por <span id="tokenExpires"></span>):
+                <button id="copyTokenBtn" class="ml-2 text-indigo-600 hover:underline text-xs">Copiar token</button>
+            </div>
+            <div class="bg-slate-900 text-slate-100 rounded p-3 font-mono text-xs overflow-x-auto" id="curlExample"></div>
+            <div class="text-xs text-slate-500">
+                Endpoints clave:
+                <code class="bg-slate-100 px-1 rounded">GET /catalogs</code>,
+                <code class="bg-slate-100 px-1 rounded">GET /catalogs/{name}</code>,
+                <code class="bg-slate-100 px-1 rounded">GET /catalogs/{name}/entries?limit=100&offset=0&q=...</code>
+                · <a href="/docs" class="text-indigo-600 hover:underline">Ver todos en Swagger</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Filters -->
+    <section class="bg-white rounded-lg shadow p-4 mb-4">
+        <div class="flex flex-wrap gap-3 items-center">
+            <input type="text" id="searchBox" placeholder="Buscar catálogo por nombre..."
+                   class="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded-md text-sm" />
+            <select id="sourceFilter" class="px-3 py-2 border border-slate-300 rounded-md text-sm">
+                <option value="">Todas las fuentes</option>
+                <option value="socrata">Socrata</option>
+                <option value="reps_export">REPS</option>
+                <option value="sispro_aspx">SISPRO</option>
+                <option value="manual">Manual</option>
+            </select>
+            <button id="refreshBtn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-md text-sm">
+                ↻ Refrescar
+            </button>
+        </div>
+    </section>
+
+    <!-- Catalog table -->
+    <section class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-slate-700 text-xs uppercase">
+                <tr>
+                    <th class="text-left px-4 py-3">Catálogo</th>
+                    <th class="text-left px-4 py-3">Fuente</th>
+                    <th class="text-right px-4 py-3">Filas</th>
+                    <th class="text-left px-4 py-3">Última sync</th>
+                    <th class="text-left px-4 py-3">Tabla</th>
+                    <th class="text-right px-4 py-3">Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="catalogTbody" class="divide-y divide-slate-100">
+                <tr><td colspan="6" class="text-center py-8 text-slate-400">Cargando...</td></tr>
+            </tbody>
+        </table>
+    </section>
+</main>
+
+<!-- Modal de detalle -->
+<div id="modal" class="hidden fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] flex flex-col">
+        <div class="flex items-center justify-between px-4 py-3 border-b">
+            <h3 id="modalTitle" class="font-semibold"></h3>
+            <button id="modalCloseBtn" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">&times;</button>
+        </div>
+        <div class="flex-1 overflow-auto p-4" id="modalBody"></div>
+    </div>
+</div>
+
+<script>
+const TOKEN = localStorage.getItem("salud_token");
+const USERNAME = localStorage.getItem("salud_username");
+const ROLE = localStorage.getItem("salud_role");
+
+if (!TOKEN) { window.location.href = "/"; }
+
+const headers = { Authorization: "Bearer " + TOKEN };
+let CATALOGS = [];
+
+function api(path) {
+    return fetch(path, { headers }).then(r => {
+        if (r.status === 401) { localStorage.clear(); window.location.href = "/"; throw new Error("Sesión expirada"); }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+    });
+}
+
+function fmtNum(n) {
+    if (n === null || n === undefined) return "—";
+    return n.toLocaleString("es-CO");
+}
+
+function fmtDate(s) {
+    if (!s) return "—";
+    const d = new Date(s);
+    return d.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function relativeDate(s) {
+    if (!s) return "—";
+    const d = new Date(s);
+    const diffMs = Date.now() - d.getTime();
+    const diffH = diffMs / 3600000;
+    if (diffH < 1) return "hace " + Math.round(diffMs / 60000) + " min";
+    if (diffH < 24) return "hace " + Math.round(diffH) + " h";
+    if (diffH < 24 * 7) return "hace " + Math.round(diffH / 24) + " d";
+    return d.toLocaleDateString("es-CO");
+}
+
+// Header info
+document.getElementById("userBadge").textContent = USERNAME;
+const roleBadge = document.getElementById("roleBadge");
+roleBadge.textContent = ROLE;
+roleBadge.className = "px-2 py-0.5 rounded text-xs font-medium " +
+    (ROLE === "super_admin" ? "bg-purple-100 text-purple-800" : "bg-blue-100 text-blue-800");
+
+// Token info
+const exp = parseInt(localStorage.getItem("salud_token_exp") || "0");
+document.getElementById("tokenExpires").textContent = exp ? new Date(exp).toLocaleTimeString("es-CO") : "—";
+document.getElementById("curlExample").textContent =
+    `curl -H "Authorization: Bearer ${TOKEN.substring(0, 20)}..." \\\n     ${window.location.origin}/catalogs`;
+
+document.getElementById("copyTokenBtn").addEventListener("click", () => {
+    navigator.clipboard.writeText(TOKEN);
+    const btn = event.target;
+    btn.textContent = "Copiado";
+    setTimeout(() => { btn.textContent = "Copiar token"; }, 1500);
+});
+
+document.getElementById("logoutBtn").addEventListener("click", () => {
+    localStorage.clear();
+    window.location.href = "/";
+});
+
+// Render catalogs
+function renderCatalogs() {
+    const search = document.getElementById("searchBox").value.toLowerCase();
+    const sourceFilter = document.getElementById("sourceFilter").value;
+
+    let filtered = CATALOGS;
+    if (search) filtered = filtered.filter(c => c.name.toLowerCase().includes(search));
+    if (sourceFilter) filtered = filtered.filter(c => c.source === sourceFilter);
+
+    const tbody = document.getElementById("catalogTbody");
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-slate-400">Sin resultados</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = filtered.map(c => `
+        <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2 font-medium text-slate-900">${c.name}</td>
+            <td class="px-4 py-2"><span class="text-xs px-2 py-0.5 rounded ${sourceColor(c.source)}">${c.source}</span></td>
+            <td class="px-4 py-2 text-right tabular-nums">${fmtNum(c.row_count)}</td>
+            <td class="px-4 py-2 text-slate-600" title="${fmtDate(c.last_synced)}">${relativeDate(c.last_synced)}</td>
+            <td class="px-4 py-2 font-mono text-xs text-slate-500">${c.table_name || "—"}</td>
+            <td class="px-4 py-2 text-right">
+                <button data-name="${c.name}" class="detail-btn text-indigo-600 hover:underline text-sm">Detalle</button>
+            </td>
+        </tr>
+    `).join("");
+
+    document.querySelectorAll(".detail-btn").forEach(btn => {
+        btn.addEventListener("click", () => openDetail(btn.dataset.name));
+    });
+}
+
+function sourceColor(s) {
+    if (s === "socrata") return "bg-green-100 text-green-800";
+    if (s === "reps_export") return "bg-yellow-100 text-yellow-800";
+    if (s === "sispro_aspx") return "bg-orange-100 text-orange-800";
+    return "bg-slate-100 text-slate-700";
+}
+
+// Modal
+const modal = document.getElementById("modal");
+document.getElementById("modalCloseBtn").addEventListener("click", () => modal.classList.add("hidden"));
+modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
+
+async function openDetail(name) {
+    document.getElementById("modalTitle").textContent = name;
+    document.getElementById("modalBody").innerHTML = `<div class="text-center py-8 text-slate-400">Cargando...</div>`;
+    modal.classList.remove("hidden");
+    try {
+        const [meta, page] = await Promise.all([
+            api(`/catalogs/${encodeURIComponent(name)}`),
+            api(`/catalogs/${encodeURIComponent(name)}/entries?limit=20`),
+        ]);
+        renderModal(meta, page);
+    } catch (e) {
+        document.getElementById("modalBody").innerHTML =
+            `<div class="text-red-600 text-sm">${e.message}</div>`;
+    }
+}
+
+function renderModal(meta, page) {
+    const schemaRows = (meta.schema || []).map(s => `
+        <tr><td class="font-mono text-xs">${s.col}</td>
+            <td class="text-xs text-slate-500">${s.from}</td>
+            <td class="text-xs"><code>${s.type}</code></td></tr>
+    `).join("");
+
+    const sample = page.entries.slice(0, 10);
+    const sampleCols = sample.length > 0 ? Object.keys(sample[0]) : [];
+    const sampleHead = sampleCols.map(c => `<th class="px-2 py-1 text-left">${c}</th>`).join("");
+    const sampleRows = sample.map(row =>
+        `<tr>${sampleCols.map(c => `<td class="px-2 py-1 border-t text-xs">${escapeHtml(String(row[c] ?? ""))}</td>`).join("")}</tr>`
+    ).join("");
+
+    document.getElementById("modalBody").innerHTML = `
+        <div class="grid grid-cols-2 gap-4 mb-4 text-sm">
+            <div><span class="text-slate-500">Fuente:</span> <span class="px-2 py-0.5 rounded text-xs ${sourceColor(meta.source)}">${meta.source}</span></div>
+            <div><span class="text-slate-500">Filas:</span> <strong>${fmtNum(meta.row_count)}</strong></div>
+            <div><span class="text-slate-500">Tabla:</span> <code class="text-xs">${meta.table_name || "—"}</code></div>
+            <div><span class="text-slate-500">Última sync:</span> ${fmtDate(meta.last_synced)}</div>
+            <div class="col-span-2"><span class="text-slate-500">URL fuente:</span> <a href="${meta.source_url}" target="_blank" class="text-indigo-600 hover:underline text-xs">${meta.source_url || "—"}</a></div>
+            <div class="col-span-2"><span class="text-slate-500">Licencia:</span> <span class="text-xs">${meta.license || "—"}</span></div>
+            <div class="col-span-2"><span class="text-slate-500">SHA256:</span> <code class="text-xs">${meta.sha256 || "—"}</code></div>
+            ${meta.description ? `<div class="col-span-2"><span class="text-slate-500">Descripción:</span> ${meta.description}</div>` : ""}
+        </div>
+
+        <div class="mb-4">
+            <h4 class="font-semibold mb-2 text-sm">Esquema (${(meta.schema || []).length} columnas)</h4>
+            <div class="bg-slate-50 rounded p-2 max-h-48 overflow-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="text-slate-500"><th class="text-left">Columna SQL</th><th class="text-left">Original</th><th class="text-left">Tipo</th></tr></thead>
+                    <tbody>${schemaRows || '<tr><td colspan="3" class="text-slate-400">—</td></tr>'}</tbody>
+                </table>
+            </div>
+        </div>
+
+        <div>
+            <h4 class="font-semibold mb-2 text-sm">Muestra (primeras 10 filas)</h4>
+            <div class="overflow-auto max-h-80 border border-slate-200 rounded">
+                <table class="w-full text-xs">
+                    <thead class="bg-slate-100 sticky top-0">${sampleHead ? `<tr>${sampleHead}</tr>` : ""}</thead>
+                    <tbody>${sampleRows || '<tr><td class="px-2 py-4 text-center text-slate-400">Sin filas</td></tr>'}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+// Wiring
+["input", "change"].forEach(ev => {
+    document.getElementById("searchBox").addEventListener(ev, renderCatalogs);
+    document.getElementById("sourceFilter").addEventListener(ev, renderCatalogs);
+});
+document.getElementById("refreshBtn").addEventListener("click", load);
+
+async function load() {
+    try {
+        CATALOGS = await api("/catalogs");
+        document.getElementById("statCatalogs").textContent = CATALOGS.length;
+        const totalRows = CATALOGS.reduce((a, c) => a + (c.row_count || 0), 0);
+        document.getElementById("statRows").textContent = fmtNum(totalRows);
+        const lastSync = CATALOGS.map(c => c.last_synced).filter(Boolean).sort().pop();
+        document.getElementById("statLastSync").textContent = relativeDate(lastSync);
+        document.getElementById("statSources").textContent = new Set(CATALOGS.map(c => c.source)).size;
+        renderCatalogs();
+    } catch (e) {
+        document.getElementById("catalogTbody").innerHTML =
+            `<tr><td colspan="6" class="text-center py-8 text-red-600">${e.message}</td></tr>`;
+    }
+}
+load();
+</script>
+</body>
+</html>

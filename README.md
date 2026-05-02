@@ -28,6 +28,7 @@ Total inicial: **319 catálogos · ~2.5M filas · ~3 GB en disco**.
 | [05 — Deep technical](docs/05-deep-technical.md) | Devs que extienden | Internals, cómo añadir source/sink/provider |
 | [06 — Despliegue](docs/06-despliegue.md) | DevOps / SRE | Cron, Docker, K8s, sizing, hardening |
 | [07 — Pruebas](docs/07-pruebas.md) | QA / DevOps | Smoke tests, validación pre-prod, CI |
+| [08 — API REST + Dashboard](docs/08-api.md) | Integradores / consumidores | Auth Bearer JWT, permisos por catálogo, OpenAPI dinámico, dashboard web |
 | [Inventario de fuentes](docs/inventario_fuentes.md) | Analistas | Esquema de columnas + ejemplo por catálogo |
 | [Permisos](docs/permisos.md) | Compliance / legal | Régimen legal de cada fuente |
 | [Proxy](docs/proxy.md) | DevOps | Pool de proxies opcional, providers, fallback |
