@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+*.egg-info/
+build/
+dist/
+
+# Caches
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Datos sincronizados — son grandes (>1 GB total). Se regeneran con `python -m sync_catalogos.sync --all`
+catalogos_co/co/**/*.json
