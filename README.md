@@ -104,14 +104,31 @@ uv pip install -e ".[mssql]"     # SQLAlchemy + pyodbc
 uv pip install -e ".[mongo]"     # pymongo
 ```
 
-**Esquema (paridad SQL ↔ Mongo):**
+**Esquema (tipado, paridad SQL ↔ Mongo):**
+
+Una tabla / colección **por cada catálogo**, con columnas inferidas desde los datos reales (no genérico con `data JSON`):
 
 | Tabla / Collection | Contenido |
 |--------------------|-----------|
-| `salud_catalog_metadata` | 1 fila/doc por catálogo: `name, source, source_url, version, license, row_count, last_synced, sha256, notes` |
-| `salud_catalog_entries` | N filas/docs por entry: `(catalog_name, idx, data)`. PK compuesta. `data` es JSON nativo (JSONB en Postgres, JSON en MySQL, NVARCHAR(MAX) en MSSQL, BSON en Mongo). |
+| `salud_catalog_metadata` | 1 fila/doc por catálogo: `name, source, source_url, version, license, row_count, last_synced, sha256, notes, table_name, schema_json` |
+| `salud_<catalog_name>` | N filas/docs por entry. Columnas tipadas según los datos: `_idx INTEGER PK`, `<col> <tipo>` |
 
-Estrategia de upsert: `DELETE catalog_entries + INSERT bulk` por catálogo. Atómico dentro de una transacción, idempotente.
+**Inferencia de tipos** (sobre los datos reales):
+- `BIGINT` — todos parsean como entero
+- `DOUBLE PRECISION` — todos como float
+- `BOOLEAN` — todos `SI/NO/Y/N/TRUE/FALSE`
+- `DATE` — todos `YYYY-MM-DD`, `DD/MM/YYYY`, `YYYYMMDD`, o ISO datetime
+- `VARCHAR(50/100/255/1000/4000)` o `TEXT` — según longitud máxima observada (con buffer de 25%)
+
+**Sanitización de nombres** (acentos / caracteres especiales):
+- `Municipio PNSR antes 2023` → `municipio_pnsr_antes_2023`
+- `Extra_I:TipoRegimen` → `extra_i_tiporegimen`
+- `Categorías Médicas` → `categorias_medicas` (acentos eliminados)
+- ASCII fold + lowercase + snake_case + trunc a 63 chars + dedup con sufijo `_2`
+
+**Los valores siempre preservan UTF-8** (`MEDELLÍN`, `ARCHIPIÉLAGO`, etc.) — solo los nombres de tabla/columna se sanean.
+
+Estrategia de upsert: por catálogo, `DELETE + INSERT bulk` atómico. Idempotente.
 
 ## Variables de entorno
 

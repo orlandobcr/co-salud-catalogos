@@ -1,37 +1,54 @@
 """DB sinks — escribe catálogos a un motor de persistencia opcional.
 
+**Schema tipado por catálogo** (no genérico): cada catálogo se mapea a su
+propia tabla / colección con columnas inferidas desde los datos reales.
+
 Soporta 5 motores via factory `make_sink(url)`:
 
-    - sqlite:///./salud.db                             → SqlSink (SQLAlchemy)
-    - postgresql+psycopg://u:p@h:5432/db               → SqlSink
-    - mysql+pymysql://u:p@h:3306/db                    → SqlSink
-    - mssql+pyodbc://u:p@h/db?driver=ODBC+Driver+18    → SqlSink
-    - mongodb://u:p@h:27017/db   |  mongodb+srv://...  → MongoSink (pymongo)
+    - sqlite:///./salud.db
+    - postgresql+psycopg://u:p@h:5432/db
+    - mysql+pymysql://u:p@h:3306/db
+    - mssql+pyodbc://u:p@h/db?driver=ODBC+Driver+18+for+SQL+Server
+    - mongodb://u:p@h:27017/db   |  mongodb+srv://...
 
-Esquema (paridad entre SQL y Mongo):
+Esquema generado:
 
-    Tabla/Collection 1: salud_catalog_metadata
-        documento/fila único por catálogo, con metadata.
-    Tabla/Collection 2: salud_catalog_entries
-        N documentos/filas, uno por entry. PK = (catalog_name, idx).
+    salud_catalog_metadata           (1 fila por catálogo, igual en todos los motores)
+        name, description, source, source_url, source_id, version,
+        license, row_count, last_synced, sha256, notes
 
-Estrategia de upsert: DELETE+INSERT atómico por catálogo. Idempotente.
+    salud_<catalog_name>             (1 tabla / colección por catálogo)
+        _idx INTEGER PRIMARY KEY     # posición original 0..N-1
+        <col_1> <inferred_type>      # ej. codigo_habilitacion VARCHAR(50)
+        <col_2> <inferred_type>      # ej. fecha_apertura DATE
+        ...
 
-Drivers requeridos (instalar el extra):
-    uv pip install -e ".[postgres]"   # SQLAlchemy + psycopg
-    uv pip install -e ".[mysql]"      # SQLAlchemy + pymysql
-    uv pip install -e ".[mssql]"      # SQLAlchemy + pyodbc
-    uv pip install -e ".[mongo]"      # pymongo
-    uv pip install -e ".[db]"         # solo SQLAlchemy (suficiente para sqlite)
+Tipos inferidos (ver `db_schema.py` para detalles):
+    - BIGINT, DOUBLE PRECISION, BOOLEAN, DATE
+    - VARCHAR(50/100/255/1000/4000) o TEXT según longitud máxima
+
+Sanitización de nombres:
+    - ASCII fold (acentos eliminados)
+    - snake_case, lowercase
+    - Caracteres no [a-z0-9_] → _
+    - Truncado a 63 chars (límite Postgres)
+    - Dedup con sufijo _2, _3 si dos originales colapsan
+
+Estrategia de upsert: por catálogo, DELETE + bulk INSERT atómico en transacción.
+Idempotente.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import urlparse
 
+from .db_schema import ColumnSpec, coerce_value, infer_schema, sanitize_table_name
 from .schema import CatalogFile
+
+log = logging.getLogger(__name__)
 
 _BATCH_SIZE = 1000
 
@@ -50,28 +67,45 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 
 class DbSink(Protocol):
-    """Interfaz común para todos los sinks de persistencia."""
-
     def ensure_schema(self) -> None: ...
     def write_catalog(self, catalog: CatalogFile) -> None: ...
     def close(self) -> None: ...
 
 
 # =====================================================================
-# SQL backend (SQLAlchemy 2.x — sqlite / postgres / mysql / mssql)
+# SQL backend (SQLAlchemy 2.x)
 # =====================================================================
+
+def _sql_type_for(spec: ColumnSpec):
+    """Convierte el ColumnSpec a un type SQLAlchemy concreto."""
+    from sqlalchemy import (
+        BigInteger, Boolean, Date, Float, String, Text,
+    )
+    name = spec.sql_type_name
+    if name == "BIGINT":
+        return BigInteger()
+    if name == "DOUBLE PRECISION":
+        return Float()
+    if name == "BOOLEAN":
+        return Boolean()
+    if name == "DATE":
+        return Date()
+    if name == "TEXT":
+        return Text()
+    if name.startswith("VARCHAR("):
+        n = int(name[len("VARCHAR("):-1])
+        return String(n)
+    return String(255)
+
 
 class SqlSink:
     def __init__(self, url: str, *, echo: bool = False) -> None:
         try:
             from sqlalchemy import (
-                JSON,
                 Column,
                 DateTime,
-                Index,
                 Integer,
                 MetaData,
-                PrimaryKeyConstraint,
                 String,
                 Table,
                 Text,
@@ -88,10 +122,9 @@ class SqlSink:
 
         self.url = url
         self.engine = create_engine(url, future=True, echo=echo)
-        md = MetaData()
-        self._md = md
+        self._md_meta = MetaData()
         self.t_meta = Table(
-            "salud_catalog_metadata", md,
+            "salud_catalog_metadata", self._md_meta,
             Column("name", String(120), primary_key=True),
             Column("description", Text),
             Column("source", String(40), nullable=False),
@@ -103,23 +136,45 @@ class SqlSink:
             Column("last_synced", DateTime(timezone=True)),
             Column("sha256", String(64)),
             Column("notes", Text),
+            Column("table_name", String(80)),
+            Column("schema_json", Text),  # JSON string con el schema inferido (audit)
         )
-        self.t_entries = Table(
-            "salud_catalog_entries", md,
-            Column("catalog_name", String(120), nullable=False),
-            Column("idx", Integer, nullable=False),
-            Column("data", JSON, nullable=False),
-            PrimaryKeyConstraint("catalog_name", "idx"),
-            Index("ix_salud_catalog_entries_name", "catalog_name"),
-        )
+        # Cache de Tables por catalog_name
+        self._tables: dict[str, "Table"] = {}
 
     def ensure_schema(self) -> None:
-        self._md.create_all(self.engine)
+        self._md_meta.create_all(self.engine)
+
+    def _build_catalog_table(self, catalog_name: str, schema: list[ColumnSpec]):
+        """Construye el objeto Table para un catálogo (sin crear DDL todavía)."""
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        table_name = sanitize_table_name(catalog_name)
+        if table_name in self._tables:
+            return self._tables[table_name], table_name
+
+        md = MetaData()
+        cols = [Column("_idx", Integer, primary_key=True)]
+        for spec in schema:
+            cols.append(Column(spec.name, _sql_type_for(spec), nullable=spec.nullable))
+        table = Table(table_name, md, *cols)
+        self._tables[table_name] = table
+        return table, table_name
 
     def write_catalog(self, catalog: CatalogFile, *, batch_size: int = _BATCH_SIZE) -> None:
+        import json
         from sqlalchemy import delete, insert
         m = catalog.metadata
         entries = catalog.entries or []
+        schema = infer_schema(entries) if entries else []
+        table_name = sanitize_table_name(m.name)
+
+        # Construir/cachear tabla y crear DDL si no existe
+        if entries:
+            table, table_name = self._build_catalog_table(m.name, schema)
+            # Crear DDL solo de esta tabla (no toca otras)
+            table.create(self.engine, checkfirst=True)
+
         meta_row = {
             "name": m.name,
             "description": m.description or None,
@@ -132,21 +187,35 @@ class SqlSink:
             "last_synced": _parse_iso(m.last_synced),
             "sha256": m.sha256,
             "notes": m.notes or None,
+            "table_name": table_name,
+            "schema_json": json.dumps(
+                [{"col": s.name, "from": s.original, "type": s.sql_type_name, "nullable": s.nullable} for s in schema],
+                ensure_ascii=False,
+            ) if schema else None,
         }
+
         with self.engine.begin() as conn:
-            conn.execute(delete(self.t_entries).where(self.t_entries.c.catalog_name == m.name))
+            # Upsert metadata
             conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
             conn.execute(insert(self.t_meta).values(**meta_row))
+
+            # Replace entries
             if entries:
-                ins = insert(self.t_entries)
+                conn.execute(delete(table))
                 rows: list[dict] = []
                 for i, entry in enumerate(entries):
-                    rows.append({"catalog_name": m.name, "idx": i, "data": entry})
+                    if not isinstance(entry, dict):
+                        continue
+                    row = {"_idx": i}
+                    for spec in schema:
+                        raw = entry.get(spec.original)
+                        row[spec.name] = coerce_value(raw, spec.sql_type_name)
+                    rows.append(row)
                     if len(rows) >= batch_size:
-                        conn.execute(ins, rows)
+                        conn.execute(insert(table), rows)
                         rows.clear()
                 if rows:
-                    conn.execute(ins, rows)
+                    conn.execute(insert(table), rows)
 
     def close(self) -> None:
         self.engine.dispose()
@@ -167,28 +236,46 @@ class MongoSink:
             ) from e
 
         self.url = url
-        # DB name: prioriza arg, luego path de la URL, luego default.
         if db_name is None:
             parsed = urlparse(url)
             db_name = (parsed.path or "/salud_catalogos").lstrip("/") or "salud_catalogos"
         self._client: "MongoClient" = MongoClient(url)
         self.db = self._client[db_name]
         self.col_meta = self.db["salud_catalog_metadata"]
-        self.col_entries = self.db["salud_catalog_entries"]
 
     def ensure_schema(self) -> None:
-        # Index único en metadata.name (PK lógica)
         self.col_meta.create_index("name", unique=True)
-        # Compound PK lógico en entries
-        self.col_entries.create_index(
-            [("catalog_name", 1), ("idx", 1)], unique=True
-        )
-        self.col_entries.create_index("catalog_name")
+
+    def _collection_for(self, catalog_name: str):
+        col_name = sanitize_table_name(catalog_name)
+        col = self.db[col_name]
+        # Asegurar índice único en _idx
+        col.create_index("_idx", unique=True)
+        return col, col_name
 
     def write_catalog(self, catalog: CatalogFile, *, batch_size: int = _BATCH_SIZE) -> None:
+        from datetime import date, datetime, time as _time
         from pymongo import InsertOne
         m = catalog.metadata
         entries = catalog.entries or []
+        schema = infer_schema(entries) if entries else []
+        col, col_name = self._collection_for(m.name)
+
+        def to_bson(v):
+            # BSON no soporta `date` puro — promueve a datetime medianoche.
+            if isinstance(v, date) and not isinstance(v, datetime):
+                return datetime.combine(v, _time.min)
+            return v
+
+        # Crear índices secundarios sugeridos (por columnas comunes id-like)
+        for spec in schema[:5]:  # solo primeras 5 para no saturar
+            if any(k in spec.original.lower() for k in ("codigo", "id", "nit")):
+                try:
+                    col.create_index(spec.name)
+                except Exception:
+                    pass
+
+        # Replace metadata + entries
         meta_doc = {
             "name": m.name,
             "description": m.description or None,
@@ -201,26 +288,32 @@ class MongoSink:
             "last_synced": _parse_iso(m.last_synced),
             "sha256": m.sha256,
             "notes": m.notes or None,
+            "collection_name": col_name,
+            "schema": [
+                {"col": s.name, "from": s.original, "type": s.sql_type_name, "nullable": s.nullable}
+                for s in schema
+            ],
         }
-
-        # Replace strategy (Mongo no es transaccional sin replica set, pero el
-        # delete + insert es secuencial y idempotente — segundo run repite estado).
-        self.col_entries.delete_many({"catalog_name": m.name})
         self.col_meta.replace_one({"name": m.name}, meta_doc, upsert=True)
+
+        # Reemplazo atómico de la colección (drop colección antes de inserts)
+        col.delete_many({})
 
         if entries:
             ops = []
             for i, entry in enumerate(entries):
-                ops.append(InsertOne({
-                    "catalog_name": m.name,
-                    "idx": i,
-                    "data": entry,
-                }))
+                if not isinstance(entry, dict):
+                    continue
+                doc = {"_idx": i}
+                for spec in schema:
+                    raw = entry.get(spec.original)
+                    doc[spec.name] = to_bson(coerce_value(raw, spec.sql_type_name))
+                ops.append(InsertOne(doc))
                 if len(ops) >= batch_size:
-                    self.col_entries.bulk_write(ops, ordered=False)
+                    col.bulk_write(ops, ordered=False)
                     ops.clear()
             if ops:
-                self.col_entries.bulk_write(ops, ordered=False)
+                col.bulk_write(ops, ordered=False)
 
     def close(self) -> None:
         self._client.close()
@@ -231,13 +324,8 @@ class MongoSink:
 # =====================================================================
 
 def make_sink(url: str) -> DbSink:
-    """Construye el sink correcto según el prefijo de la URL.
-
-    Levanta `RuntimeError` si el driver requerido no está instalado, con
-    mensaje accionable indicando qué extra instalar.
-    """
+    """Construye el sink correcto según el prefijo de la URL."""
     scheme = url.split(":", 1)[0].lower()
     if scheme.startswith("mongodb"):
         return MongoSink(url)
-    # Por defecto, SQLAlchemy maneja sqlite, postgresql, mysql, mssql, oracle, etc.
     return SqlSink(url)
