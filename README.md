@@ -17,7 +17,20 @@ Cada catálogo se descarga desde su fuente oficial y se guarda como JSON con met
 
 Total inicial: **319 catálogos · ~2.5M filas · ~3 GB en disco**.
 
-Detalle completo y esquema de columnas de cada catálogo: [docs/inventario_fuentes.md](docs/inventario_fuentes.md).
+## Documentación
+
+| Doc | Audiencia | Para qué |
+|-----|-----------|----------|
+| [01 — Introducción gerencial](docs/01-introduccion-gerencial.md) | Decisión / dirección | Valor, casos de uso, costos, ROI |
+| [02 — Arquitectura](docs/02-arquitectura.md) | Arquitectos / leads | Componentes, decisiones de diseño, modelo de datos |
+| [03 — Funcionamiento](docs/03-funcionamiento.md) | Operadores / leads | Flujos por kind, idempotencia, scheduling, observabilidad |
+| [04 — Manual de uso](docs/04-manual-uso.md) | Usuarios CLI | Comandos paso a paso, ejemplos, troubleshooting |
+| [05 — Deep technical](docs/05-deep-technical.md) | Devs que extienden | Internals, cómo añadir source/sink/provider |
+| [06 — Despliegue](docs/06-despliegue.md) | DevOps / SRE | Cron, Docker, K8s, sizing, hardening |
+| [07 — Pruebas](docs/07-pruebas.md) | QA / DevOps | Smoke tests, validación pre-prod, CI |
+| [Inventario de fuentes](docs/inventario_fuentes.md) | Analistas | Esquema de columnas + ejemplo por catálogo |
+| [Permisos](docs/permisos.md) | Compliance / legal | Régimen legal de cada fuente |
+| [Proxy](docs/proxy.md) | DevOps | Pool de proxies opcional, providers, fallback |
 
 ## Fuentes y permisos
 
