@@ -36,8 +36,15 @@ class Settings(BaseSettings):
     bind_host: str = "0.0.0.0"
     bind_port: int = 8000
 
-    # CORS
-    cors_origins: list[str] = ["*"]
+    # CORS — CSV de orígenes; "*" para abierto
+    cors_origins: str = "*"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        v = self.cors_origins.strip()
+        if not v or v == "*":
+            return ["*"]
+        return [o.strip() for o in v.split(",") if o.strip()]
 
     # Comportamiento
     page_size_default: int = 100
