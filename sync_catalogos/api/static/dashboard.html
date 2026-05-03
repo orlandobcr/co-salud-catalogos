@@ -511,7 +511,7 @@ async function loadMunicipiosFor(depto) {
         const marker = L.circleMarker([m.latitud, m.longitud], {
             radius, color: "#ea580c", fillColor: "#fb923c", fillOpacity: 0.7, weight: 1
         }).bindTooltip(`<strong>${m.nom_mpio}</strong><br/>${fmtNum(n)} prestadores`)
-          .on("click", () => goToPrestadoresFor(depto.nombre_departamento, m.nom_mpio));
+          .on("click", () => goToPrestadoresFor(depto.nombre_departamento, m.cod_mpio));
         marker.addTo(MAP);
         MAP_LAYERS.push(marker);
     });
@@ -531,7 +531,7 @@ function renderGeoList(items, kind, depto) {
                     </li>`;
         } else {
             return `<li class="py-2 px-1 hover:bg-slate-50 cursor-pointer flex justify-between items-center"
-                       data-action="muni" data-name="${escapeHtml(it.nom_mpio)}" data-dpto="${escapeHtml(depto.nombre_departamento)}">
+                       data-action="muni" data-cod="${escapeHtml(it.cod_mpio)}" data-dpto="${escapeHtml(depto.nombre_departamento)}">
                       <span>${escapeHtml(it.nom_mpio)}</span>
                       <span class="text-xs text-slate-500">${fmtNum(it.prestadores_count||0)}</span>
                     </li>`;
@@ -543,7 +543,7 @@ function renderGeoList(items, kind, depto) {
                 const d = DEPTOS.find(x => x.codigo_departamento === li.dataset.cod);
                 if (d) loadMunicipiosFor(d);
             } else {
-                goToPrestadoresFor(li.dataset.dpto, li.dataset.name);
+                goToPrestadoresFor(li.dataset.dpto, li.dataset.cod);
             }
         });
     });
@@ -559,11 +559,11 @@ document.getElementById("geoListSearch").addEventListener("input", (ev) => {
 });
 
 // Cuando se navega de Geo → Prestadores
-function goToPrestadoresFor(dptoName, mpioName) {
+function goToPrestadoresFor(dptoName, mpioCod) {
     document.querySelector('.sub-tab-btn[data-sub="prestadores"]').click();
     document.getElementById("filtDpto").value = dptoName;
     onChangeDpto().then(() => {
-        document.getElementById("filtMpio").value = mpioName;
+        if (mpioCod) document.getElementById("filtMpio").value = mpioCod;
         runPrestadoresSearch(true);
     });
 }
@@ -609,7 +609,7 @@ async function onChangeDpto() {
         : `/explore/geo/municipios?nombre_dpto=${encodeURIComponent(dpto)}&with_counts=false`;
     const data = await api(url);
     mpioSel.innerHTML = '<option value="">— municipio (todos) —</option>' +
-        data.items.map(m => `<option value="${escapeHtml(m.nom_mpio)}">${escapeHtml(m.nom_mpio)}</option>`).join("");
+        data.items.map(m => `<option value="${escapeHtml(m.cod_mpio)}">${escapeHtml(m.nom_mpio)}</option>`).join("");
     mpioSel.disabled = false;
 
     // Refrescar grupos de servicio dependientes del dpto
@@ -670,8 +670,12 @@ async function runPrestadoresSearch(reset) {
     if (reset) CURRENT_PAGE_OFFSET = 0;
     const params = new URLSearchParams();
     const f = (id) => document.getElementById(id).value.trim();
-    if (f("filtDpto")) params.set("nombre_dpto", f("filtDpto"));
-    if (f("filtMpio")) params.set("nombre_mpio", f("filtMpio"));
+    if (f("filtDpto")) {
+        const d = DEPTOS.find(x => x.nombre_departamento === f("filtDpto"));
+        if (d?.codigo_departamento) params.set("cod_dpto", d.codigo_departamento);
+        else params.set("nombre_dpto", f("filtDpto"));
+    }
+    if (f("filtMpio")) params.set("cod_mpio", f("filtMpio"));
     if (f("filtClase")) params.set("clase_prestador", f("filtClase"));
     if (f("filtNaju")) params.set("naturaleza", f("filtNaju"));
     if (f("filtServicio")) params.set("serv_codigo", f("filtServicio"));

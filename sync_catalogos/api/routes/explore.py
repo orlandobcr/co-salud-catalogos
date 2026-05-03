@@ -92,23 +92,26 @@ def geo_departamentos(
     if not with_counts:
         return {"items": base}
 
+    # Agrupar por LEFT(codigo_habilitacion, 2) — los 2 primeros dígitos del
+    # código de habilitación REPS son el código DIVIPOLA del departamento.
+    # Esto es robusto y evita toda la mess de naming.
     counts: dict[str, int] = {}
     try:
         for r in query_raw(engine, """
-            SELECT depa_nombre AS d, COUNT(DISTINCT codigo_habilitacion) AS n
+            SELECT LEFT(codigo_habilitacion, 2) AS cod_dpto,
+                   COUNT(DISTINCT codigo_habilitacion) AS n
             FROM salud_reps_habilitados
-            WHERE depa_nombre IS NOT NULL
-            GROUP BY depa_nombre
+            WHERE codigo_habilitacion ~ '^[0-9]{5,}'
+            GROUP BY LEFT(codigo_habilitacion, 2)
         """):
-            divipola_name = reps_to_divipola_dpto_name(r["d"])
-            if divipola_name:
-                counts[divipola_name] = counts.get(divipola_name, 0) + (r["n"] or 0)
+            if r["cod_dpto"]:
+                counts[r["cod_dpto"]] = r["n"] or 0
     except Exception:
         counts = {}
 
     for it in base:
-        key = (it.get("nombre_departamento") or "").strip()
-        it["prestadores_count"] = counts.get(key, 0)
+        cod = it.get("codigo_departamento")
+        it["prestadores_count"] = counts.get(cod, 0)
     return {"items": base}
 
 
@@ -144,29 +147,30 @@ def geo_municipios(
     if not with_counts:
         return {"items": municipios, "total": len(municipios)}
 
+    # Conteo por LEFT(codigo_habilitacion, 5) = cod_mpio DIVIPOLA. Robusto.
     counts: dict[str, int] = {}
     try:
         sub_where = ""
         sub_params: dict[str, Any] = {}
-        depto_name = nombre_dpto or (municipios[0]["dpto"] if municipios else None)
-        if depto_name:
-            in_clause = _build_in_clause_dpto(depto_name, sub_params, "dpto")
-            if in_clause:
-                sub_where = " WHERE " + in_clause
+        if cod_dpto:
+            sub_where = " WHERE LEFT(codigo_habilitacion, 2) = :cod_dpto"
+            sub_params["cod_dpto"] = cod_dpto
         for r in query_raw(engine, f"""
-            SELECT muni_nombre AS m, COUNT(DISTINCT codigo_habilitacion) AS n
+            SELECT LEFT(codigo_habilitacion, 5) AS cod_mpio,
+                   COUNT(DISTINCT codigo_habilitacion) AS n
             FROM salud_reps_habilitados
-            {sub_where}
-            GROUP BY muni_nombre
+            WHERE codigo_habilitacion ~ '^[0-9]{{5,}}'
+              {sub_where.replace('WHERE', 'AND') if sub_where else ''}
+            GROUP BY LEFT(codigo_habilitacion, 5)
         """, sub_params):
-            if r["m"]:
-                counts[r["m"].strip().upper()] = r["n"]
+            if r["cod_mpio"]:
+                counts[r["cod_mpio"]] = r["n"] or 0
     except Exception:
         counts = {}
 
     for it in municipios:
-        key = (it.get("nom_mpio") or "").strip().upper()
-        it["prestadores_count"] = counts.get(key, 0)
+        cod = it.get("cod_mpio")
+        it["prestadores_count"] = counts.get(cod, 0)
 
     return {"items": municipios, "total": len(municipios)}
 
@@ -187,6 +191,8 @@ def geo_municipios(
 )
 def search_prestadores(
     request: Request,
+    cod_dpto: str | None = Query(None, description="Código DIVIPOLA del depto (2 dígitos) — preferido sobre nombre_dpto"),
+    cod_mpio: str | None = Query(None, description="Código DIVIPOLA del municipio (5 dígitos) — preferido sobre nombre_mpio"),
     nombre_dpto: str | None = None,
     nombre_mpio: str | None = None,
     clase_prestador: str | None = Query(None, description="clpr_nombre (ej. IPS, Profesional Independiente)"),
@@ -207,11 +213,18 @@ def search_prestadores(
     use_servicios = bool(serv_codigo or grse_codigo)
     table = "salud_reps_servicios" if use_servicios else "salud_reps_habilitados"
 
-    if nombre_dpto:
+    # Filtros geográficos: preferir códigos sobre nombres (más robustos)
+    if cod_mpio:
+        where.append("LEFT(codigo_habilitacion, 5) = :cod_mpio")
+        params["cod_mpio"] = cod_mpio
+    elif cod_dpto:
+        where.append("LEFT(codigo_habilitacion, 2) = :cod_dpto")
+        params["cod_dpto"] = cod_dpto
+    elif nombre_dpto:
         in_clause = _build_in_clause_dpto(nombre_dpto, params, "dpto")
         if in_clause:
             where.append(in_clause)
-    if nombre_mpio:
+    if not cod_mpio and nombre_mpio:
         where.append("upper(muni_nombre) = upper(:nombre_mpio)")
         params["nombre_mpio"] = nombre_mpio
     if clase_prestador:
@@ -268,6 +281,7 @@ def search_prestadores(
         "offset": offset,
         "filters_applied": {
             k: v for k, v in {
+                "cod_dpto": cod_dpto, "cod_mpio": cod_mpio,
                 "nombre_dpto": nombre_dpto, "nombre_mpio": nombre_mpio,
                 "clase_prestador": clase_prestador, "naturaleza": naturaleza,
                 "ese": ese, "serv_codigo": serv_codigo, "grse_codigo": grse_codigo, "q": q,
@@ -467,17 +481,18 @@ def prestador_360(
         LIMIT 100
     """, {"ch": codigo_habilitacion}))
 
-    # Geo: lat/long del municipio del prestador (DIVIPOLA, abierto)
+    # Geo: lat/long del municipio del prestador.
+    # Los primeros 5 dígitos del codigo_habilitacion = cod_mpio DIVIPOLA (estándar Co).
     geo = None
-    muni_nombre = identidad.get("muni_nombre") or identidad.get("municipio")
-    if muni_nombre:
+    ch = codigo_habilitacion or ""
+    if len(ch) >= 5 and ch[:5].isdigit():
         try:
             geo_rows = query_raw(engine, """
                 SELECT cod_dpto, dpto, cod_mpio, nom_mpio, latitud, longitud
                 FROM salud_divipola_municipios
-                WHERE upper(nom_mpio) = upper(:m)
+                WHERE cod_mpio = :cod_mpio
                 LIMIT 1
-            """, {"m": muni_nombre})
+            """, {"cod_mpio": ch[:5]})
             geo = geo_rows[0] if geo_rows else None
         except Exception:
             pass
