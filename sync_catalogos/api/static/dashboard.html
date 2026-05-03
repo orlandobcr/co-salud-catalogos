@@ -602,7 +602,7 @@ async function onChangeDpto() {
         mpioSel.disabled = true;
         return;
     }
-    mpioSel.disabled = true; mpioSel.innerHTML = '<option>Cargando...</option>';
+    mpioSel.disabled = true; mpioSel.innerHTML = '<option value="">Cargando...</option>';
     const depto = DEPTOS.find(d => d.nombre_departamento === dpto);
     const url = depto?.codigo_departamento
         ? `/explore/geo/municipios?cod_dpto=${encodeURIComponent(depto.codigo_departamento)}&with_counts=false`
@@ -624,19 +624,20 @@ document.getElementById("filtDpto").addEventListener("change", onChangeDpto);
 document.getElementById("filtGrupoServ").addEventListener("change", async () => {
     const grupo = document.getElementById("filtGrupoServ").value;
     const servSel = document.getElementById("filtServicio");
+    servSel.value = "";  // limpia cualquier valor previo antes de recargar
     if (!grupo) {
         servSel.innerHTML = '<option value="">— servicio —</option>';
         servSel.disabled = true;
         return;
     }
-    servSel.disabled = true; servSel.innerHTML = '<option>Cargando...</option>';
+    servSel.disabled = true; servSel.innerHTML = '<option value="">Cargando...</option>';
     try {
-        const opts = await api(`/explore/prestadores/servicios?q=${encodeURIComponent("")}&limit=500`);
+        const opts = await api(`/explore/prestadores/servicios?limit=500`);
         const matches = opts.items.filter(s => s.grse_nombre === grupo);
         servSel.innerHTML = '<option value="">— servicio (todos del grupo) —</option>' +
             matches.map(s => `<option value="${escapeHtml(s.serv_codigo)}">${escapeHtml(s.serv_codigo)} · ${escapeHtml(s.serv_nombre)}</option>`).join("");
         servSel.disabled = false;
-    } catch(e) { servSel.innerHTML = '<option>Error cargando</option>'; }
+    } catch(e) { servSel.innerHTML = '<option value="">Error cargando</option>'; }
 });
 
 ["change", "input"].forEach(ev => {

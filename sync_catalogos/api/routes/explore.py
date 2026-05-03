@@ -207,13 +207,44 @@ def search_prestadores(
 ):
     engine = request.app.state.engine
 
+    # Sanear inputs (frontend a veces manda placeholders tipo "Cargando...")
+    def _clean(v):
+        if v is None: return None
+        s = str(v).strip()
+        if not s or "..." in s or s.lower() == "cargando": return None
+        return s
+    serv_codigo = _clean(serv_codigo)
+    grse_codigo = _clean(grse_codigo)
+    cod_mpio = _clean(cod_mpio)
+    cod_dpto = _clean(cod_dpto)
+    clase_prestador = _clean(clase_prestador)
+    naturaleza = _clean(naturaleza)
+    q = _clean(q)
+    nombre_dpto = _clean(nombre_dpto)
+    nombre_mpio = _clean(nombre_mpio)
+
+    # Si hay filtro por servicio/grupo: pre-resolver los codigos_habilitacion
+    # desde salud_reps_servicios y luego joinear con habilitados (que sí tiene
+    # nombre_prestador). reps_servicios fue cargada como TEXT puro vía COPY y
+    # NO tiene nombre_prestador.
+    serv_filter_clause = ""
+    serv_params: dict[str, Any] = {}
+    if serv_codigo or grse_codigo:
+        serv_where = ["1=1"]
+        if serv_codigo:
+            serv_where.append("serv_codigo = :_serv_codigo")
+            serv_params["_serv_codigo"] = serv_codigo
+        if grse_codigo:
+            serv_where.append("grse_codigo = :_grse_codigo")
+            serv_params["_grse_codigo"] = grse_codigo
+        serv_filter_clause = (
+            "codigo_habilitacion IN (SELECT DISTINCT codigo_habilitacion "
+            f"FROM salud_reps_servicios WHERE {' AND '.join(serv_where)})"
+        )
+
     where = ["1=1"]
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = dict(serv_params)
 
-    use_servicios = bool(serv_codigo or grse_codigo)
-    table = "salud_reps_servicios" if use_servicios else "salud_reps_habilitados"
-
-    # Filtros geográficos: preferir códigos sobre nombres (más robustos)
     if cod_mpio:
         where.append("LEFT(codigo_habilitacion, 5) = :cod_mpio")
         params["cod_mpio"] = cod_mpio
@@ -234,18 +265,10 @@ def search_prestadores(
         where.append("upper(naju_nombre) like upper(:naju)")
         params["naju"] = f"%{naturaleza}%"
     if ese is not None:
-        if use_servicios:
-            where.append("upper(ese) = :ese")
-            params["ese"] = "TRUE" if ese else "FALSE"
-        else:
-            where.append("ese = :ese")
-            params["ese"] = ese
-    if use_servicios and serv_codigo:
-        where.append("serv_codigo = :serv_codigo")
-        params["serv_codigo"] = serv_codigo
-    if use_servicios and grse_codigo:
-        where.append("grse_codigo = :grse_codigo")
-        params["grse_codigo"] = grse_codigo
+        where.append("ese = :ese")
+        params["ese"] = ese
+    if serv_filter_clause:
+        where.append(serv_filter_clause)
     if q:
         where.append("(upper(nombre_prestador) like upper(:q) OR cast(nits_nit as text) like :qraw)")
         params["q"] = f"%{q}%"
@@ -255,7 +278,7 @@ def search_prestadores(
 
     count_row = query_raw(engine, f"""
         SELECT count(DISTINCT codigo_habilitacion) AS n
-        FROM {table}
+        FROM salud_reps_habilitados
         WHERE {where_sql}
     """, params)
     total = count_row[0]["n"] if count_row else 0
@@ -269,7 +292,7 @@ def search_prestadores(
             clpr_nombre AS clase_prestador,
             nits_nit AS nit,
             ese
-        FROM {table}
+        FROM salud_reps_habilitados
         WHERE {where_sql}
         ORDER BY nombre_prestador
         LIMIT :limit OFFSET :offset
