@@ -6,13 +6,17 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import MetaData, Table, func, select, text
+from sqlalchemy import MetaData, Table, func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
 
 
 def list_catalogs_for_user(engine: Engine, *, allowed: set[str] | None = None) -> list[dict]:
-    """Lista de catálogos con metadata. Si `allowed` es None → todos (super_admin)."""
+    """Lista de catálogos con metadata. Si `allowed` es None → todos (super_admin).
+
+    En el modelo freemium nuevo, este endpoint devuelve TODA la lista (estructura
+    abierta) y el flag de acceso se calcula en la capa de routes.
+    """
     sql = text("""
         SELECT name, description, source, source_url, source_id, version, license,
                row_count, last_synced, sha256, notes, table_name
@@ -27,6 +31,11 @@ def list_catalogs_for_user(engine: Engine, *, allowed: set[str] | None = None) -
                 continue
             out.append(d)
     return out
+
+
+def list_all_catalogs(engine: Engine) -> list[dict]:
+    """Lista TODA la metadata de catálogos sin filtro (estructura abierta freemium)."""
+    return list_catalogs_for_user(engine, allowed=None)
 
 
 def get_catalog_metadata(engine: Engine, name: str) -> dict | None:
@@ -63,13 +72,36 @@ def reflect_catalog_table(engine: Engine, table_name: str) -> Table | None:
         return None
 
 
+def _apply_filters(stmt, table: Table, filters: dict[str, Any] | None):
+    """Aplica filtros exactos sobre columnas de la tabla. Ignora keys no existentes."""
+    if not filters:
+        return stmt
+    for col_name, value in filters.items():
+        if col_name in table.c and value not in (None, ""):
+            stmt = stmt.where(table.c[col_name] == value)
+    return stmt
+
+
+def _apply_text_search(stmt, table: Table, search_text: str | None):
+    if not search_text:
+        return stmt
+    like = f"%{search_text}%"
+    text_cols = [
+        c for c in table.c
+        if str(c.type).lower().startswith(("varchar", "text", "string"))
+    ]
+    if text_cols:
+        stmt = stmt.where(or_(*[c.ilike(like) for c in text_cols]))
+    return stmt
+
+
 def query_catalog_entries(
     engine: Engine,
     table_name: str,
     *,
     limit: int = 100,
     offset: int = 0,
-    filters: dict[str, str] | None = None,
+    filters: dict[str, Any] | None = None,
     search_text: str | None = None,
 ) -> tuple[int, list[dict]]:
     """Consulta paginada sobre la tabla del catálogo. Devuelve (total, rows)."""
@@ -78,22 +110,13 @@ def query_catalog_entries(
         return 0, []
 
     stmt = select(table)
-    if filters:
-        for col_name, value in filters.items():
-            if col_name in table.c:
-                stmt = stmt.where(table.c[col_name] == value)
-    if search_text:
-        # Búsqueda parcial en columnas de texto (ILIKE para Postgres, LIKE general)
-        like = f"%{search_text}%"
-        text_cols = [c for c in table.c if str(c.type).lower().startswith(("varchar", "text", "string"))]
-        if text_cols:
-            from sqlalchemy import or_
-            stmt = stmt.where(or_(*[c.like(like) for c in text_cols]))
+    stmt = _apply_filters(stmt, table, filters)
+    stmt = _apply_text_search(stmt, table, search_text)
 
-    # Total con misma WHERE
     count_stmt = select(func.count()).select_from(stmt.subquery())
-
-    stmt = stmt.order_by(table.c._idx).limit(limit).offset(offset)
+    if "_idx" in table.c:
+        stmt = stmt.order_by(table.c._idx)
+    stmt = stmt.limit(limit).offset(offset)
 
     with engine.connect() as conn:
         total = conn.execute(count_stmt).scalar() or 0
@@ -102,12 +125,85 @@ def query_catalog_entries(
     out: list[dict] = []
     for r in rows:
         m = dict(r._mapping)
-        # Coerce datetimes para JSON-friendly
         for k, v in list(m.items()):
             if isinstance(v, datetime):
                 m[k] = v.isoformat()
         out.append(m)
     return total, out
+
+
+def distinct_values(
+    engine: Engine,
+    table_name: str,
+    column_name: str,
+    *,
+    filters: dict[str, Any] | None = None,
+    search_text: str | None = None,
+    limit: int = 500,
+) -> list[Any]:
+    """DISTINCT values de una columna respetando filtros previos.
+
+    Usado por los dropdowns en cascada del dashboard:
+    - Filtro 1: dpto seleccionado
+    - Filtro 2 (siguiente dropdown): municipios disponibles para ese dpto
+    """
+    table = reflect_catalog_table(engine, table_name)
+    if table is None or column_name not in table.c:
+        return []
+    col = table.c[column_name]
+    stmt = select(col).distinct().where(col.isnot(None))
+    stmt = _apply_filters(stmt, table, filters)
+    if search_text:
+        like = f"%{search_text}%"
+        try:
+            stmt = stmt.where(col.ilike(like))
+        except Exception:
+            stmt = stmt.where(col.like(like))
+    stmt = stmt.order_by(col).limit(limit)
+
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return [r[0] for r in rows if r[0] not in (None, "")]
+
+
+def count_catalog_rows(
+    engine: Engine,
+    table_name: str,
+    *,
+    filters: dict[str, Any] | None = None,
+) -> int:
+    """Count rápido con filtros opcionales."""
+    table = reflect_catalog_table(engine, table_name)
+    if table is None:
+        return 0
+    stmt = select(func.count()).select_from(table)
+    stmt = _apply_filters(select(table), table, filters)
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    with engine.connect() as conn:
+        return conn.execute(count_stmt).scalar() or 0
+
+
+def query_raw(
+    engine: Engine,
+    sql: str,
+    params: dict | None = None,
+) -> list[dict]:
+    """Ejecutor de SQL crudo para queries cross-catalog del router /explore.
+
+    NOTA: solo se debe usar con SQL parametrizado controlado en código (no
+    interpolar valores de usuario). Las consultas que llaman a esto vienen del
+    router explore.py donde los parámetros se pasan vía bind params seguros.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params or {}).all()
+    out: list[dict] = []
+    for r in rows:
+        m = dict(r._mapping)
+        for k, v in list(m.items()):
+            if isinstance(v, datetime):
+                m[k] = v.isoformat()
+        out.append(m)
+    return out
 
 
 def catalog_exists(engine: Engine, name: str) -> bool:

@@ -31,6 +31,7 @@ from .models import api_audit_log, api_metadata
 from .routes import admin as admin_router
 from .routes import auth as auth_router
 from .routes import catalogs as catalogs_router
+from .routes import explore as explore_router
 from .settings import settings
 
 log = logging.getLogger(__name__)
@@ -120,6 +121,7 @@ async def audit_middleware(request: Request, call_next):
 
 app.include_router(auth_router.router)
 app.include_router(catalogs_router.router)
+app.include_router(explore_router.router)
 app.include_router(admin_router.router)
 
 

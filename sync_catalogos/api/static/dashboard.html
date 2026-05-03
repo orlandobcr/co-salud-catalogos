@@ -5,12 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Dashboard · co-salud-catalogos</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <link rel="icon" href="/static/favicon.ico" type="image/x-icon" />
+    <style>
+      .tab-btn { border-bottom: 2px solid transparent; }
+      .tab-btn.active { border-bottom-color: #4f46e5; color: #4f46e5; font-weight: 600; }
+      #colombiaMap { height: 540px; border-radius: 0.5rem; }
+      .premium-overlay { background: linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.95) 100%); }
+      .premium-locked { position: relative; min-height: 120px; }
+      .scroll-shadow { box-shadow: inset 0 -8px 8px -8px rgba(0,0,0,0.1); }
+    </style>
 </head>
 <body class="bg-slate-50 text-slate-800">
 
 <!-- Top bar -->
-<header class="bg-white border-b border-slate-200">
+<header class="bg-white border-b border-slate-200 sticky top-0 z-30">
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <div>
             <h1 class="text-lg font-semibold">co-salud-catalogos</h1>
@@ -24,96 +36,287 @@
             <button id="logoutBtn" class="text-red-600 hover:underline">Salir</button>
         </div>
     </div>
+    <!-- Top tabs -->
+    <div class="max-w-7xl mx-auto px-4 flex gap-6 -mb-px">
+        <button class="tab-btn active px-1 py-2 text-sm" data-tab="explorar">Explorar</button>
+        <button class="tab-btn px-1 py-2 text-sm" data-tab="catalogos">Catálogos</button>
+        <button class="tab-btn px-1 py-2 text-sm hidden" data-tab="admin" id="adminTabBtn">Admin</button>
+    </div>
 </header>
 
 <main class="max-w-7xl mx-auto px-4 py-6">
 
-    <!-- Stats top -->
-    <section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="text-xs text-slate-500 uppercase">Catálogos accesibles</div>
-            <div class="text-2xl font-bold text-slate-900 mt-1" id="statCatalogs">—</div>
-        </div>
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="text-xs text-slate-500 uppercase">Filas totales</div>
-            <div class="text-2xl font-bold text-slate-900 mt-1" id="statRows">—</div>
-        </div>
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="text-xs text-slate-500 uppercase">Última actualización</div>
-            <div class="text-sm font-bold text-slate-900 mt-1" id="statLastSync">—</div>
-        </div>
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="text-xs text-slate-500 uppercase">Fuentes</div>
-            <div class="text-2xl font-bold text-slate-900 mt-1" id="statSources">—</div>
-        </div>
+  <!-- ====================================================================== -->
+  <!-- TAB: EXPLORAR (default) -->
+  <!-- ====================================================================== -->
+  <section id="tab-explorar" class="tab-pane">
+
+    <!-- Stats cards -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" id="exploreStats">
+      <!-- populated dinámicamente -->
     </section>
 
-    <!-- API consumption info -->
-    <section class="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 class="font-semibold mb-2">Consumo de la API</h2>
-        <div class="text-sm text-slate-600 space-y-2">
-            <div>
-                Token actual (válido por <span id="tokenExpires"></span>):
-                <button id="copyTokenBtn" class="ml-2 text-indigo-600 hover:underline text-xs">Copiar token</button>
-            </div>
-            <div class="bg-slate-900 text-slate-100 rounded p-3 font-mono text-xs overflow-x-auto" id="curlExample"></div>
-            <div class="text-xs text-slate-500">
-                Endpoints clave:
-                <code class="bg-slate-100 px-1 rounded">GET /catalogs</code>,
-                <code class="bg-slate-100 px-1 rounded">GET /catalogs/{name}</code>,
-                <code class="bg-slate-100 px-1 rounded">GET /catalogs/{name}/entries?limit=100&offset=0&q=...</code>
-                · <a href="/docs" class="text-indigo-600 hover:underline">Ver todos en Swagger</a>
-            </div>
-        </div>
-    </section>
+    <!-- Sub-tabs de Explorar -->
+    <div class="flex gap-2 mb-4 bg-white p-1 rounded-lg shadow-sm w-fit">
+      <button class="sub-tab-btn active px-4 py-1.5 rounded text-sm font-medium" data-sub="geo">Geográfico</button>
+      <button class="sub-tab-btn px-4 py-1.5 rounded text-sm font-medium" data-sub="prestadores">Prestadores</button>
+      <button class="sub-tab-btn px-4 py-1.5 rounded text-sm font-medium" data-sub="clinico">Clínico</button>
+    </div>
 
-    <!-- Filters -->
-    <section class="bg-white rounded-lg shadow p-4 mb-4">
-        <div class="flex flex-wrap gap-3 items-center">
-            <input type="text" id="searchBox" placeholder="Buscar catálogo por nombre..."
-                   class="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded-md text-sm" />
-            <select id="sourceFilter" class="px-3 py-2 border border-slate-300 rounded-md text-sm">
-                <option value="">Todas las fuentes</option>
-                <option value="socrata">Socrata</option>
-                <option value="reps_export">REPS</option>
-                <option value="sispro_aspx">SISPRO</option>
-                <option value="manual">Manual</option>
+    <!-- ============== Sub-vista: GEO ============== -->
+    <div id="sub-geo" class="sub-pane">
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="lg:col-span-2 bg-white rounded-lg shadow p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="font-semibold">Mapa de Colombia · prestadores por departamento</h2>
+            <button id="resetMapBtn" class="text-xs text-indigo-600 hover:underline">Reset zoom</button>
+          </div>
+          <div id="colombiaMap"></div>
+          <p class="text-xs text-slate-500 mt-2">
+            Click un departamento para ver sus municipios. Click un municipio para ver sus prestadores.
+          </p>
+        </div>
+        <div class="bg-white rounded-lg shadow p-4">
+          <h2 class="font-semibold mb-3" id="geoListTitle">Departamentos (33)</h2>
+          <input type="text" id="geoListSearch" placeholder="Filtrar por nombre..."
+                 class="w-full px-3 py-2 border border-slate-300 rounded-md text-sm mb-2" />
+          <ul id="geoList" class="text-sm divide-y divide-slate-100 max-h-[450px] overflow-auto"></ul>
+          <button id="geoBackBtn" class="hidden mt-3 text-xs text-indigo-600 hover:underline">← Volver a departamentos</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== Sub-vista: PRESTADORES ============== -->
+    <div id="sub-prestadores" class="sub-pane hidden">
+      <div class="bg-white rounded-lg shadow p-4 mb-4">
+        <h2 class="font-semibold mb-3">Filtros</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Departamento</label>
+            <select id="filtDpto" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm"></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Municipio</label>
+            <select id="filtMpio" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" disabled></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Clase prestador</label>
+            <select id="filtClase" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm"></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Naturaleza jurídica</label>
+            <select id="filtNaju" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm"></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Grupo de servicio</label>
+            <select id="filtGrupoServ" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm"></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Servicio específico</label>
+            <select id="filtServicio" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" disabled></select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">ESE</label>
+            <select id="filtEse" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm">
+              <option value="">— cualquiera —</option><option value="true">Sí</option><option value="false">No</option>
             </select>
-            <button id="refreshBtn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-md text-sm">
-                ↻ Refrescar
-            </button>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Buscar (nombre/NIT)</label>
+            <input type="text" id="filtQ" class="w-full px-2 py-1.5 border border-slate-300 rounded text-sm" placeholder="Texto libre..." />
+          </div>
         </div>
+        <div class="flex items-center justify-between mt-3">
+          <button id="filtClearBtn" class="text-xs text-slate-500 hover:underline">Limpiar filtros</button>
+          <div class="text-xs text-slate-500" id="filtSummary"></div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-4 py-2 border-b text-sm flex justify-between items-center">
+          <span><strong id="prestTotalLabel">—</strong> prestadores encontrados</span>
+          <span class="text-xs text-slate-500" id="prestPagingLabel"></span>
+        </div>
+        <div class="overflow-auto max-h-[60vh]">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-xs uppercase text-slate-700 sticky top-0">
+              <tr>
+                <th class="text-left px-3 py-2">Nombre prestador</th>
+                <th class="text-left px-3 py-2">Departamento</th>
+                <th class="text-left px-3 py-2">Municipio</th>
+                <th class="text-left px-3 py-2">Clase</th>
+                <th class="text-left px-3 py-2">NIT</th>
+                <th class="text-right px-3 py-2">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="prestTbody" class="divide-y divide-slate-100">
+              <tr><td colspan="6" class="text-center text-slate-400 py-6">Selecciona filtros para empezar la búsqueda.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="px-4 py-2 border-t flex justify-between text-sm">
+          <button id="prestPrevBtn" class="text-indigo-600 hover:underline disabled:opacity-30" disabled>← Anterior</button>
+          <button id="prestNextBtn" class="text-indigo-600 hover:underline disabled:opacity-30" disabled>Siguiente →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============== Sub-vista: CLÍNICO ============== -->
+    <div id="sub-clinico" class="sub-pane hidden">
+      <div class="bg-white rounded-lg shadow p-4 mb-4">
+        <h2 class="font-semibold mb-2">Buscador clínico</h2>
+        <div class="flex flex-wrap gap-2">
+          <select id="clinKind" class="px-3 py-2 border border-slate-300 rounded text-sm">
+            <option value="cie10">CIE-10 · Diagnósticos</option>
+            <option value="cups">CUPS · Procedimientos</option>
+            <option value="ium_medicamentos">IUM · Medicamentos</option>
+            <option value="eapb_codigos">EAPB · Aseguradoras</option>
+            <option value="glosario_medico">Glosario médico</option>
+          </select>
+          <input type="text" id="clinQ" placeholder="Buscar por código o nombre..."
+                 class="flex-1 min-w-[300px] px-3 py-2 border border-slate-300 rounded text-sm" />
+          <button id="clinSearchBtn" class="px-4 py-2 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700">Buscar</button>
+        </div>
+        <p class="text-xs text-slate-500 mt-2">
+          Estos catálogos requieren acceso premium para ver el contenido. Puedes explorar la estructura libremente.
+        </p>
+      </div>
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div id="clinResults" class="overflow-auto max-h-[60vh]">
+          <p class="text-center text-slate-400 py-8 text-sm">Sin resultados.</p>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ====================================================================== -->
+  <!-- TAB: CATÁLOGOS (lista clásica) -->
+  <!-- ====================================================================== -->
+  <section id="tab-catalogos" class="tab-pane hidden">
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs text-slate-500 uppercase">Total catálogos</div>
+        <div class="text-2xl font-bold text-slate-900 mt-1" id="statCatalogs">—</div>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs text-slate-500 uppercase">Filas totales</div>
+        <div class="text-2xl font-bold text-slate-900 mt-1" id="statRows">—</div>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs text-slate-500 uppercase">Última actualización</div>
+        <div class="text-sm font-bold text-slate-900 mt-1" id="statLastSync">—</div>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs text-slate-500 uppercase">Accesibles a ti</div>
+        <div class="text-2xl font-bold text-slate-900 mt-1" id="statAccessible">—</div>
+      </div>
     </section>
 
-    <!-- Catalog table -->
-    <section class="bg-white rounded-lg shadow overflow-hidden">
-        <table class="w-full text-sm">
-            <thead class="bg-slate-100 text-slate-700 text-xs uppercase">
-                <tr>
-                    <th class="text-left px-4 py-3">Catálogo</th>
-                    <th class="text-left px-4 py-3">Fuente</th>
-                    <th class="text-right px-4 py-3">Filas</th>
-                    <th class="text-left px-4 py-3">Última sync</th>
-                    <th class="text-left px-4 py-3">Tabla</th>
-                    <th class="text-right px-4 py-3">Acciones</th>
-                </tr>
-            </thead>
-            <tbody id="catalogTbody" class="divide-y divide-slate-100">
-                <tr><td colspan="6" class="text-center py-8 text-slate-400">Cargando...</td></tr>
-            </tbody>
-        </table>
+    <section class="bg-white rounded-lg shadow p-4 mb-6">
+      <h2 class="font-semibold mb-2">Consumo de la API</h2>
+      <div class="text-sm text-slate-600 space-y-2">
+        <div>Token actual (válido por <span id="tokenExpires"></span>):
+          <button id="copyTokenBtn" class="ml-2 text-indigo-600 hover:underline text-xs">Copiar token</button>
+        </div>
+        <div class="bg-slate-900 text-slate-100 rounded p-3 font-mono text-xs overflow-x-auto" id="curlExample"></div>
+        <div class="text-xs text-slate-500">
+          Endpoints: <code class="bg-slate-100 px-1 rounded">GET /api/v1/catalogs</code>,
+          <code class="bg-slate-100 px-1 rounded">/{name}</code>,
+          <code class="bg-slate-100 px-1 rounded">/{name}/entries?filter[col]=val&q=...</code>,
+          <code class="bg-slate-100 px-1 rounded">/{name}/distinct/{column}</code>
+          · <a href="/docs" class="text-indigo-600 hover:underline">Swagger</a>
+        </div>
+      </div>
     </section>
+
+    <section class="bg-white rounded-lg shadow p-4 mb-4">
+      <div class="flex flex-wrap gap-3 items-center">
+        <input type="text" id="searchBox" placeholder="Buscar catálogo por nombre..."
+               class="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded-md text-sm" />
+        <select id="sourceFilter" class="px-3 py-2 border border-slate-300 rounded-md text-sm">
+          <option value="">Todas las fuentes</option>
+          <option value="socrata">Socrata</option>
+          <option value="reps_export">REPS</option>
+          <option value="sispro_aspx">SISPRO</option>
+          <option value="manual">Manual</option>
+        </select>
+        <select id="accessFilter" class="px-3 py-2 border border-slate-300 rounded-md text-sm">
+          <option value="">Todos</option><option value="yes">Solo accesibles</option><option value="no">Solo premium</option>
+        </select>
+        <button id="refreshBtn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-md text-sm">↻ Refrescar</button>
+      </div>
+    </section>
+
+    <section class="bg-white rounded-lg shadow overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-100 text-slate-700 text-xs uppercase">
+          <tr>
+            <th class="text-left px-4 py-3">Catálogo</th>
+            <th class="text-left px-4 py-3">Fuente</th>
+            <th class="text-right px-4 py-3">Filas</th>
+            <th class="text-left px-4 py-3">Última sync</th>
+            <th class="text-left px-4 py-3">Acceso</th>
+            <th class="text-right px-4 py-3">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="catalogTbody" class="divide-y divide-slate-100">
+          <tr><td colspan="6" class="text-center py-8 text-slate-400">Cargando...</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </section>
+
 </main>
 
-<!-- Modal de detalle -->
+<!-- ====================================================================== -->
+<!-- MODALES -->
+<!-- ====================================================================== -->
+
+<!-- Modal genérico (catálogo / vista 360 / clínico) -->
 <div id="modal" class="hidden fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] flex flex-col">
-        <div class="flex items-center justify-between px-4 py-3 border-b">
-            <h3 id="modalTitle" class="font-semibold"></h3>
-            <button id="modalCloseBtn" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">&times;</button>
-        </div>
-        <div class="flex-1 overflow-auto p-4" id="modalBody"></div>
+  <div class="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[92vh] flex flex-col">
+    <div class="flex items-center justify-between px-4 py-3 border-b">
+      <h3 id="modalTitle" class="font-semibold"></h3>
+      <button id="modalCloseBtn" class="text-slate-400 hover:text-slate-700 text-2xl leading-none">&times;</button>
     </div>
+    <div class="flex-1 overflow-auto p-4" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Modal Premium / upgrade CTA -->
+<div id="premiumModal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  <div class="bg-white rounded-lg shadow-2xl max-w-md w-full overflow-hidden">
+    <div class="bg-gradient-to-r from-amber-400 to-orange-500 text-white px-5 py-4">
+      <div class="flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+        <h3 class="font-bold text-lg">Catálogo premium</h3>
+      </div>
+    </div>
+    <div class="p-5 space-y-3 text-sm">
+      <p class="text-slate-700">
+        El detalle de <strong id="premiumCatalog">—</strong> requiere una suscripción.
+      </p>
+      <p class="text-slate-600 text-xs">
+        Puedes seguir explorando la estructura del sistema, pero el contenido detallado de los registros está reservado a usuarios con permiso.
+      </p>
+      <div class="bg-slate-50 border border-slate-200 rounded p-3 text-xs">
+        <strong>¿Qué desbloqueas?</strong>
+        <ul class="list-disc list-inside text-slate-600 mt-1 space-y-0.5">
+          <li>Acceso completo a los registros del catálogo</li>
+          <li>Endpoints REST con filtros y búsqueda</li>
+          <li>Vistas cruzadas REPS / SISPRO / Datos Abiertos</li>
+        </ul>
+      </div>
+    </div>
+    <div class="px-5 py-3 bg-slate-50 border-t flex gap-2 justify-end">
+      <button id="premiumCloseBtn" class="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-900">Cerrar</button>
+      <a id="premiumCtaBtn" href="#" target="_blank"
+         class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm rounded font-medium">
+        Hablar con comercial
+      </a>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -124,184 +327,656 @@ const ROLE = localStorage.getItem("salud_role");
 if (!TOKEN) { window.location.href = "/"; }
 
 const headers = { Authorization: "Bearer " + TOKEN };
-let CATALOGS = [];
-
 const API = "/api/v1";
-function api(path) {
-    return fetch(API + path, { headers }).then(r => {
+
+let CATALOGS = [];
+let ME = null;          // { id, role, permissions:[] }
+let DEPTOS = [];        // [{codigo_departamento, nombre_departamento, latitud, longitud, prestadores_count}]
+let MAP = null;         // L.map instance
+let MAP_LAYERS = [];    // current markers
+let SELECTED_DEPTO = null;
+let CURRENT_PAGE_OFFSET = 0;
+const PAGE_SIZE = 100;
+
+// -------- Helpers ----------
+function api(path, opts={}) {
+    return fetch(API + path, { ...opts, headers: { ...headers, ...(opts.headers||{}) } })
+      .then(async r => {
         if (r.status === 401) { localStorage.clear(); window.location.href = "/"; throw new Error("Sesión expirada"); }
-        if (!r.ok) throw new Error("HTTP " + r.status);
+        if (r.status === 402) { const body = await r.json(); throw { premium: true, body }; }
+        if (!r.ok) {
+            let detail = "HTTP " + r.status;
+            try { const b = await r.json(); detail = b.detail || detail; } catch{}
+            throw new Error(detail);
+        }
         return r.json();
-    });
+      });
 }
-
-function fmtNum(n) {
-    if (n === null || n === undefined) return "—";
-    return n.toLocaleString("es-CO");
-}
-
-function fmtDate(s) {
-    if (!s) return "—";
-    const d = new Date(s);
-    return d.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" });
-}
-
+function fmtNum(n) { if (n===null||n===undefined) return "—"; return n.toLocaleString("es-CO"); }
+function fmtDate(s) { if (!s) return "—"; return new Date(s).toLocaleString("es-CO",{dateStyle:"medium",timeStyle:"short"}); }
 function relativeDate(s) {
     if (!s) return "—";
-    const d = new Date(s);
-    const diffMs = Date.now() - d.getTime();
-    const diffH = diffMs / 3600000;
-    if (diffH < 1) return "hace " + Math.round(diffMs / 60000) + " min";
+    const d = new Date(s), diffH = (Date.now()-d.getTime())/3600000;
+    if (diffH < 1) return "hace " + Math.round(diffH*60) + " min";
     if (diffH < 24) return "hace " + Math.round(diffH) + " h";
-    if (diffH < 24 * 7) return "hace " + Math.round(diffH / 24) + " d";
+    if (diffH < 24*7) return "hace " + Math.round(diffH/24) + " d";
     return d.toLocaleDateString("es-CO");
 }
+function escapeHtml(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+function sourceColor(s){
+  if (s==="socrata") return "bg-green-100 text-green-800";
+  if (s==="reps_export") return "bg-yellow-100 text-yellow-800";
+  if (s==="sispro_aspx") return "bg-orange-100 text-orange-800";
+  return "bg-slate-100 text-slate-700";
+}
 
-// Header info
+// -------- Header / role ----------
 document.getElementById("userBadge").textContent = USERNAME;
 const roleBadge = document.getElementById("roleBadge");
 roleBadge.textContent = ROLE;
 roleBadge.className = "px-2 py-0.5 rounded text-xs font-medium " +
     (ROLE === "super_admin" ? "bg-purple-100 text-purple-800" : "bg-blue-100 text-blue-800");
-
-// Token info
 const exp = parseInt(localStorage.getItem("salud_token_exp") || "0");
 document.getElementById("tokenExpires").textContent = exp ? new Date(exp).toLocaleTimeString("es-CO") : "—";
 document.getElementById("curlExample").textContent =
-    `curl -H "Authorization: Bearer ${TOKEN.substring(0, 20)}..." \\\n     ${window.location.origin}/api/v1/catalogs`;
+    `curl -H "Authorization: Bearer ${TOKEN.substring(0,20)}..." \\\n     ${window.location.origin}/api/v1/catalogs`;
 
 document.getElementById("copyTokenBtn").addEventListener("click", () => {
     navigator.clipboard.writeText(TOKEN);
     const btn = event.target;
     btn.textContent = "Copiado";
-    setTimeout(() => { btn.textContent = "Copiar token"; }, 1500);
+    setTimeout(() => btn.textContent = "Copiar token", 1500);
 });
-
 document.getElementById("logoutBtn").addEventListener("click", () => {
-    localStorage.clear();
-    window.location.href = "/";
+    localStorage.clear(); window.location.href = "/";
 });
 
-// Render catalogs
-function renderCatalogs() {
-    const search = document.getElementById("searchBox").value.toLowerCase();
-    const sourceFilter = document.getElementById("sourceFilter").value;
-
-    let filtered = CATALOGS;
-    if (search) filtered = filtered.filter(c => c.name.toLowerCase().includes(search));
-    if (sourceFilter) filtered = filtered.filter(c => c.source === sourceFilter);
-
-    const tbody = document.getElementById("catalogTbody");
-    if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-slate-400">Sin resultados</td></tr>`;
-        return;
-    }
-    tbody.innerHTML = filtered.map(c => `
-        <tr class="hover:bg-slate-50">
-            <td class="px-4 py-2 font-medium text-slate-900">${c.name}</td>
-            <td class="px-4 py-2"><span class="text-xs px-2 py-0.5 rounded ${sourceColor(c.source)}">${c.source}</span></td>
-            <td class="px-4 py-2 text-right tabular-nums">${fmtNum(c.row_count)}</td>
-            <td class="px-4 py-2 text-slate-600" title="${fmtDate(c.last_synced)}">${relativeDate(c.last_synced)}</td>
-            <td class="px-4 py-2 font-mono text-xs text-slate-500">${c.table_name || "—"}</td>
-            <td class="px-4 py-2 text-right">
-                <button data-name="${c.name}" class="detail-btn text-indigo-600 hover:underline text-sm">Detalle</button>
-            </td>
-        </tr>
-    `).join("");
-
-    document.querySelectorAll(".detail-btn").forEach(btn => {
-        btn.addEventListener("click", () => openDetail(btn.dataset.name));
+// -------- Tabs ----------
+document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        document.querySelectorAll(".tab-pane").forEach(p => p.classList.add("hidden"));
+        document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
+        if (btn.dataset.tab === "explorar" && MAP) MAP.invalidateSize();
     });
-}
+});
 
-function sourceColor(s) {
-    if (s === "socrata") return "bg-green-100 text-green-800";
-    if (s === "reps_export") return "bg-yellow-100 text-yellow-800";
-    if (s === "sispro_aspx") return "bg-orange-100 text-orange-800";
-    return "bg-slate-100 text-slate-700";
-}
+// -------- Sub-tabs Explorar ----------
+document.querySelectorAll(".sub-tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll(".sub-tab-btn").forEach(b => {
+            b.classList.remove("active","bg-indigo-100","text-indigo-700");
+        });
+        btn.classList.add("active","bg-indigo-100","text-indigo-700");
+        document.querySelectorAll(".sub-pane").forEach(p => p.classList.add("hidden"));
+        document.getElementById("sub-" + btn.dataset.sub).classList.remove("hidden");
+        if (btn.dataset.sub === "geo" && MAP) MAP.invalidateSize();
+    });
+});
+document.querySelectorAll(".sub-tab-btn.active").forEach(b => b.classList.add("bg-indigo-100","text-indigo-700"));
 
-// Modal
+// -------- Modal ----------
 const modal = document.getElementById("modal");
 document.getElementById("modalCloseBtn").addEventListener("click", () => modal.classList.add("hidden"));
 modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
 
-async function openDetail(name) {
-    document.getElementById("modalTitle").textContent = name;
-    document.getElementById("modalBody").innerHTML = `<div class="text-center py-8 text-slate-400">Cargando...</div>`;
-    modal.classList.remove("hidden");
+const premiumModal = document.getElementById("premiumModal");
+document.getElementById("premiumCloseBtn").addEventListener("click", () => premiumModal.classList.add("hidden"));
+premiumModal.addEventListener("click", e => { if (e.target === premiumModal) premiumModal.classList.add("hidden"); });
+
+function showPremium(catalogName, ctaUrl) {
+    document.getElementById("premiumCatalog").textContent = catalogName;
+    document.getElementById("premiumCtaBtn").href = ctaUrl ||
+        "mailto:comercial@kashport.com?subject=Acceso%20a%20" + encodeURIComponent(catalogName);
+    premiumModal.classList.remove("hidden");
+}
+
+// =========================================================================
+// EXPLORE STATS overview
+// =========================================================================
+async function loadExploreStats() {
     try {
-        const [meta, page] = await Promise.all([
-            api(`/catalogs/${encodeURIComponent(name)}`),
-            api(`/catalogs/${encodeURIComponent(name)}/entries?limit=20`),
-        ]);
-        renderModal(meta, page);
-    } catch (e) {
-        document.getElementById("modalBody").innerHTML =
-            `<div class="text-red-600 text-sm">${e.message}</div>`;
+        const s = await api("/explore/stats");
+        const fields = [
+            ["departamentos", "Departamentos"],
+            ["municipios", "Municipios"],
+            ["prestadores_habilitados", "Prestadores"],
+            ["sedes", "Sedes"],
+            ["servicios_habilitados", "Servicios habilitados"],
+            ["cie10_codigos", "Diagnósticos CIE-10"],
+            ["cups_codigos", "Procedimientos CUPS"],
+            ["medicamentos_ium", "Medicamentos IUM"],
+        ];
+        document.getElementById("exploreStats").innerHTML = fields.map(([k,label]) =>
+            `<div class="bg-white rounded-lg shadow p-3">
+               <div class="text-[10px] text-slate-500 uppercase tracking-wide">${label}</div>
+               <div class="text-xl font-bold text-slate-900">${fmtNum(s[k])}</div>
+             </div>`
+        ).join("");
+    } catch(e) { console.warn(e); }
+}
+
+// =========================================================================
+// GEO sub-vista — mapa + lista
+// =========================================================================
+async function initGeo() {
+    if (MAP) return;
+    MAP = L.map("colombiaMap").setView([4.5709, -74.2973], 5);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; OpenStreetMap', maxZoom: 18,
+    }).addTo(MAP);
+
+    const data = await api("/explore/geo/departamentos");
+    DEPTOS = data.items;
+    renderDeptosOnMap();
+    renderGeoList(DEPTOS, "depto");
+}
+
+function clearMapLayers() {
+    MAP_LAYERS.forEach(l => MAP.removeLayer(l));
+    MAP_LAYERS = [];
+}
+
+function renderDeptosOnMap() {
+    clearMapLayers();
+    SELECTED_DEPTO = null;
+    document.getElementById("geoListTitle").textContent = `Departamentos (${DEPTOS.length})`;
+    document.getElementById("geoBackBtn").classList.add("hidden");
+    DEPTOS.forEach(d => {
+        if (!d.latitud || !d.longitud) return;
+        const n = d.prestadores_count || 0;
+        const radius = 5 + Math.sqrt(n)/4;
+        const m = L.circleMarker([d.latitud, d.longitud], {
+            radius, color: "#4f46e5", fillColor: "#6366f1", fillOpacity: 0.6, weight: 1
+        }).bindTooltip(`<strong>${d.nombre_departamento}</strong><br/>${fmtNum(n)} prestadores`)
+          .on("click", () => loadMunicipiosFor(d));
+        m.addTo(MAP);
+        MAP_LAYERS.push(m);
+    });
+    MAP.setView([4.5709, -74.2973], 5);
+}
+
+async function loadMunicipiosFor(depto) {
+    SELECTED_DEPTO = depto;
+    clearMapLayers();
+    document.getElementById("geoListTitle").textContent = `Municipios de ${depto.nombre_departamento}`;
+    document.getElementById("geoBackBtn").classList.remove("hidden");
+    const data = await api("/explore/geo/municipios?cod_dpto=" + encodeURIComponent(depto.codigo_departamento));
+    const munis = data.items;
+    munis.forEach(m => {
+        if (!m.latitud || !m.longitud) return;
+        const n = m.prestadores_count || 0;
+        const radius = 4 + Math.sqrt(n)/3;
+        const marker = L.circleMarker([m.latitud, m.longitud], {
+            radius, color: "#ea580c", fillColor: "#fb923c", fillOpacity: 0.7, weight: 1
+        }).bindTooltip(`<strong>${m.nom_mpio}</strong><br/>${fmtNum(n)} prestadores`)
+          .on("click", () => goToPrestadoresFor(depto.nombre_departamento, m.nom_mpio));
+        marker.addTo(MAP);
+        MAP_LAYERS.push(marker);
+    });
+    if (depto.latitud && depto.longitud) MAP.setView([depto.latitud, depto.longitud], 8);
+    renderGeoList(munis, "muni", depto);
+}
+
+function renderGeoList(items, kind, depto) {
+    const list = document.getElementById("geoList");
+    if (!items.length) { list.innerHTML = '<li class="py-4 text-center text-slate-400">Sin datos</li>'; return; }
+    list.innerHTML = items.map(it => {
+        if (kind === "depto") {
+            return `<li class="py-2 px-1 hover:bg-slate-50 cursor-pointer flex justify-between items-center"
+                       data-action="depto" data-cod="${it.codigo_departamento}">
+                      <span>${escapeHtml(it.nombre_departamento)}</span>
+                      <span class="text-xs text-slate-500">${fmtNum(it.prestadores_count||0)}</span>
+                    </li>`;
+        } else {
+            return `<li class="py-2 px-1 hover:bg-slate-50 cursor-pointer flex justify-between items-center"
+                       data-action="muni" data-name="${escapeHtml(it.nom_mpio)}" data-dpto="${escapeHtml(depto.nombre_departamento)}">
+                      <span>${escapeHtml(it.nom_mpio)}</span>
+                      <span class="text-xs text-slate-500">${fmtNum(it.prestadores_count||0)}</span>
+                    </li>`;
+        }
+    }).join("");
+    list.querySelectorAll("li").forEach(li => {
+        li.addEventListener("click", () => {
+            if (li.dataset.action === "depto") {
+                const d = DEPTOS.find(x => x.codigo_departamento === li.dataset.cod);
+                if (d) loadMunicipiosFor(d);
+            } else {
+                goToPrestadoresFor(li.dataset.dpto, li.dataset.name);
+            }
+        });
+    });
+}
+
+document.getElementById("geoBackBtn").addEventListener("click", renderDeptosOnMap);
+document.getElementById("resetMapBtn").addEventListener("click", renderDeptosOnMap);
+document.getElementById("geoListSearch").addEventListener("input", (ev) => {
+    const v = ev.target.value.toLowerCase();
+    document.querySelectorAll("#geoList li").forEach(li => {
+        li.style.display = li.textContent.toLowerCase().includes(v) ? "" : "none";
+    });
+});
+
+// Cuando se navega de Geo → Prestadores
+function goToPrestadoresFor(dptoName, mpioName) {
+    document.querySelector('.sub-tab-btn[data-sub="prestadores"]').click();
+    document.getElementById("filtDpto").value = dptoName;
+    onChangeDpto().then(() => {
+        document.getElementById("filtMpio").value = mpioName;
+        runPrestadoresSearch(true);
+    });
+}
+
+// =========================================================================
+// PRESTADORES sub-vista
+// =========================================================================
+async function initPrestadores() {
+    const dptoSel = document.getElementById("filtDpto");
+    if (dptoSel.options.length > 1) return;
+    if (!DEPTOS.length) {
+        const data = await api("/explore/geo/departamentos?with_counts=false");
+        DEPTOS = data.items;
+    }
+    dptoSel.innerHTML = '<option value="">— departamento —</option>' +
+        DEPTOS.map(d => `<option value="${escapeHtml(d.nombre_departamento)}">${escapeHtml(d.nombre_departamento)}</option>`).join("");
+    document.getElementById("filtMpio").innerHTML = '<option value="">— municipio —</option>';
+
+    const opts = await api("/explore/prestadores/filters");
+    fillSelect("filtClase", opts.clases_prestador, "— clase —");
+    fillSelect("filtNaju", opts.naturalezas_juridicas, "— naturaleza —");
+    fillSelect("filtGrupoServ", opts.grupos_servicio.map(g => g.grse_nombre), "— grupo servicio —");
+}
+
+function fillSelect(id, values, placeholder) {
+    const el = document.getElementById(id);
+    el.innerHTML = `<option value="">${placeholder}</option>` +
+        values.filter(Boolean).map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+}
+
+async function onChangeDpto() {
+    const dpto = document.getElementById("filtDpto").value;
+    const mpioSel = document.getElementById("filtMpio");
+    if (!dpto) {
+        mpioSel.innerHTML = '<option value="">— municipio —</option>';
+        mpioSel.disabled = true;
+        return;
+    }
+    mpioSel.disabled = true; mpioSel.innerHTML = '<option>Cargando...</option>';
+    const depto = DEPTOS.find(d => d.nombre_departamento === dpto);
+    const url = depto?.codigo_departamento
+        ? `/explore/geo/municipios?cod_dpto=${encodeURIComponent(depto.codigo_departamento)}&with_counts=false`
+        : `/explore/geo/municipios?nombre_dpto=${encodeURIComponent(dpto)}&with_counts=false`;
+    const data = await api(url);
+    mpioSel.innerHTML = '<option value="">— municipio (todos) —</option>' +
+        data.items.map(m => `<option value="${escapeHtml(m.nom_mpio)}">${escapeHtml(m.nom_mpio)}</option>`).join("");
+    mpioSel.disabled = false;
+
+    // Refrescar grupos de servicio dependientes del dpto
+    try {
+        const opts = await api(`/explore/prestadores/filters?nombre_dpto=${encodeURIComponent(dpto)}`);
+        fillSelect("filtGrupoServ", opts.grupos_servicio.map(g => g.grse_nombre), "— grupo servicio —");
+    } catch(e) {}
+}
+
+document.getElementById("filtDpto").addEventListener("change", onChangeDpto);
+
+document.getElementById("filtGrupoServ").addEventListener("change", async () => {
+    const grupo = document.getElementById("filtGrupoServ").value;
+    const servSel = document.getElementById("filtServicio");
+    if (!grupo) {
+        servSel.innerHTML = '<option value="">— servicio —</option>';
+        servSel.disabled = true;
+        return;
+    }
+    servSel.disabled = true; servSel.innerHTML = '<option>Cargando...</option>';
+    try {
+        const opts = await api(`/explore/prestadores/servicios?q=${encodeURIComponent("")}&limit=500`);
+        const matches = opts.items.filter(s => s.grse_nombre === grupo);
+        servSel.innerHTML = '<option value="">— servicio (todos del grupo) —</option>' +
+            matches.map(s => `<option value="${escapeHtml(s.serv_codigo)}">${escapeHtml(s.serv_codigo)} · ${escapeHtml(s.serv_nombre)}</option>`).join("");
+        servSel.disabled = false;
+    } catch(e) { servSel.innerHTML = '<option>Error cargando</option>'; }
+});
+
+["change", "input"].forEach(ev => {
+    ["filtDpto","filtMpio","filtClase","filtNaju","filtGrupoServ","filtServicio","filtEse","filtQ"].forEach(id => {
+        document.getElementById(id).addEventListener(ev, () => {
+            clearTimeout(window._prestSearchTimer);
+            window._prestSearchTimer = setTimeout(() => runPrestadoresSearch(true), 300);
+        });
+    });
+});
+
+document.getElementById("filtClearBtn").addEventListener("click", () => {
+    ["filtDpto","filtMpio","filtClase","filtNaju","filtGrupoServ","filtServicio","filtEse","filtQ"].forEach(id => {
+        document.getElementById(id).value = "";
+    });
+    document.getElementById("filtMpio").disabled = true;
+    document.getElementById("filtServicio").disabled = true;
+    runPrestadoresSearch(true);
+});
+
+document.getElementById("prestPrevBtn").addEventListener("click", () => {
+    CURRENT_PAGE_OFFSET = Math.max(0, CURRENT_PAGE_OFFSET - PAGE_SIZE);
+    runPrestadoresSearch(false);
+});
+document.getElementById("prestNextBtn").addEventListener("click", () => {
+    CURRENT_PAGE_OFFSET += PAGE_SIZE;
+    runPrestadoresSearch(false);
+});
+
+async function runPrestadoresSearch(reset) {
+    if (reset) CURRENT_PAGE_OFFSET = 0;
+    const params = new URLSearchParams();
+    const f = (id) => document.getElementById(id).value.trim();
+    if (f("filtDpto")) params.set("nombre_dpto", f("filtDpto"));
+    if (f("filtMpio")) params.set("nombre_mpio", f("filtMpio"));
+    if (f("filtClase")) params.set("clase_prestador", f("filtClase"));
+    if (f("filtNaju")) params.set("naturaleza", f("filtNaju"));
+    if (f("filtServicio")) params.set("serv_codigo", f("filtServicio"));
+    else if (f("filtGrupoServ")) {
+        // Resolve grupo to code? For now, no — solo aplica si se elige servicio.
+    }
+    if (f("filtEse")) params.set("ese", f("filtEse"));
+    if (f("filtQ")) params.set("q", f("filtQ"));
+    params.set("limit", PAGE_SIZE);
+    params.set("offset", CURRENT_PAGE_OFFSET);
+
+    const tbody = document.getElementById("prestTbody");
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-400 py-6">Cargando...</td></tr>';
+
+    try {
+        const data = await api("/explore/prestadores?" + params.toString());
+        document.getElementById("prestTotalLabel").textContent = fmtNum(data.total);
+        document.getElementById("prestPagingLabel").textContent =
+            `Mostrando ${data.offset+1}–${data.offset + data.items.length} de ${fmtNum(data.total)}`;
+        document.getElementById("prestPrevBtn").disabled = CURRENT_PAGE_OFFSET <= 0;
+        document.getElementById("prestNextBtn").disabled = (CURRENT_PAGE_OFFSET + PAGE_SIZE) >= data.total;
+
+        if (!data.items.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-slate-400 py-6">Sin resultados.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.items.map(p => `
+            <tr class="hover:bg-slate-50">
+              <td class="px-3 py-2 font-medium">${escapeHtml(p.nombre_prestador)}</td>
+              <td class="px-3 py-2">${escapeHtml(p.departamento)}</td>
+              <td class="px-3 py-2">${escapeHtml(p.municipio)}</td>
+              <td class="px-3 py-2 text-xs">${escapeHtml(p.clase_prestador||"")}</td>
+              <td class="px-3 py-2 font-mono text-xs">${escapeHtml(p.nit||"")}</td>
+              <td class="px-3 py-2 text-right">
+                <button class="ver-360 text-indigo-600 hover:underline text-sm" data-ch="${escapeHtml(p.codigo_habilitacion)}">Vista 360 →</button>
+              </td>
+            </tr>`).join("");
+        tbody.querySelectorAll(".ver-360").forEach(btn => {
+            btn.addEventListener("click", () => openPrestador360(btn.dataset.ch));
+        });
+    } catch(e) {
+        if (e.premium) { showPremium("REPS prestadores"); return; }
+        tbody.innerHTML = `<tr><td colspan="6" class="text-center text-red-600 py-6">${e.message}</td></tr>`;
     }
 }
 
-function renderModal(meta, page) {
-    const schemaRows = (meta.schema || []).map(s => `
-        <tr><td class="font-mono text-xs">${s.col}</td>
-            <td class="text-xs text-slate-500">${s.from}</td>
-            <td class="text-xs"><code>${s.type}</code></td></tr>
-    `).join("");
+// =========================================================================
+// VISTA 360 PRESTADOR
+// =========================================================================
+async function openPrestador360(ch) {
+    document.getElementById("modalTitle").textContent = "Prestador · " + ch;
+    document.getElementById("modalBody").innerHTML = '<div class="text-center py-8 text-slate-400">Cargando vista 360...</div>';
+    modal.classList.remove("hidden");
+    try {
+        const data = await api("/explore/prestador/" + encodeURIComponent(ch));
+        renderPrestador360(data);
+    } catch(e) {
+        if (e.premium) {
+            modal.classList.add("hidden");
+            showPremium("REPS prestadores");
+            return;
+        }
+        document.getElementById("modalBody").innerHTML = `<div class="text-red-600 text-sm">${e.message}</div>`;
+    }
+}
 
+function renderPrestador360(data) {
+    const s = data.summary;
+    const sections = data.sections;
+
+    function renderSection(title, secKey, columnsConfig) {
+        const sec = sections[secKey];
+        if (!sec) return "";
+        if (sec.premium_locked) {
+            return `<div class="bg-amber-50 border border-amber-200 rounded p-3 text-sm">
+                      <div class="flex items-center justify-between">
+                        <div>
+                          <strong>${title}</strong> · contenido bloqueado
+                          <p class="text-xs text-slate-600 mt-1">Catálogo requerido: <code class="bg-white px-1 rounded">${sec.catalog_required}</code></p>
+                        </div>
+                        <button onclick="showPremium('${sec.catalog_required}')"
+                                class="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white text-xs rounded font-medium">
+                          Desbloquear
+                        </button>
+                      </div>
+                    </div>`;
+        }
+        const rows = sec.data || [];
+        if (!rows.length) {
+            return `<div class="text-xs text-slate-500 py-2">${title}: sin registros.</div>`;
+        }
+        const cols = columnsConfig || Object.keys(rows[0]);
+        const head = cols.map(c => `<th class="text-left px-2 py-1 bg-slate-100 text-xs">${c}</th>`).join("");
+        const body = rows.slice(0, 200).map(r =>
+            `<tr class="border-t border-slate-100">${cols.map(c => `<td class="px-2 py-1 text-xs">${escapeHtml(r[c]||"")}</td>`).join("")}</tr>`
+        ).join("");
+        return `<div class="mb-4">
+                  <h4 class="font-semibold text-sm mb-1">${title} <span class="text-xs text-slate-500 font-normal">(${rows.length})</span></h4>
+                  <div class="overflow-auto border border-slate-200 rounded max-h-64">
+                    <table class="w-full"><thead>${head}</thead><tbody>${body}</tbody></table>
+                  </div>
+                </div>`;
+    }
+
+    const summaryHtml = `
+        <div class="bg-slate-50 border border-slate-200 rounded p-3 mb-4">
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+            <div><span class="text-slate-500 text-xs">Cód. habilitación:</span> <strong class="font-mono">${escapeHtml(s.codigo_habilitacion)}</strong></div>
+            <div><span class="text-slate-500 text-xs">NIT:</span> ${escapeHtml(s.nit ?? "—")}</div>
+            <div><span class="text-slate-500 text-xs">ESE:</span> ${s.ese===true||s.ese==="TRUE"?"Sí":"No"}</div>
+            <div><span class="text-slate-500 text-xs">Departamento:</span> ${escapeHtml(s.departamento)}</div>
+            <div><span class="text-slate-500 text-xs">Municipio:</span> ${escapeHtml(s.municipio)}</div>
+            <div><span class="text-slate-500 text-xs">Clase:</span> ${escapeHtml(s.clase_prestador||"—")}</div>
+            <div class="col-span-2 md:col-span-3"><span class="text-slate-500 text-xs">Naturaleza jurídica:</span> ${escapeHtml(s.naturaleza_juridica||"—")}</div>
+            ${s._premium_fields_locked ? `
+              <div class="col-span-2 md:col-span-3 mt-1 text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded">
+                Algunos campos sensibles (NIT, dirección, contacto, representante legal) están bloqueados.
+                <button onclick="showPremium('reps_habilitados')" class="underline font-medium">Desbloquear</button>
+              </div>` :
+              `<div class="col-span-2"><span class="text-slate-500 text-xs">Dirección:</span> ${escapeHtml(s.direccion||"—")}</div>
+               <div><span class="text-slate-500 text-xs">Tel:</span> ${escapeHtml(s.telefono||"—")}</div>
+               <div class="col-span-2"><span class="text-slate-500 text-xs">Email:</span> ${escapeHtml(s.email||"—")}</div>
+               <div><span class="text-slate-500 text-xs">Rep. legal:</span> ${escapeHtml(s.rep_legal||"—")}</div>
+               <div><span class="text-slate-500 text-xs">Gerente:</span> ${escapeHtml(s.gerente||"—")}</div>`
+            }
+          </div>
+        </div>`;
+
+    const mapDiv = data.geo && data.geo.latitud && data.geo.longitud ?
+        `<div class="mb-4">
+           <h4 class="font-semibold text-sm mb-1">Ubicación</h4>
+           <div id="prestMapMini" style="height: 220px; border-radius: 0.375rem;"></div>
+         </div>` : "";
+
+    document.getElementById("modalBody").innerHTML = summaryHtml + mapDiv +
+        renderSection("Sedes", "sedes",
+            ["numero_sede", "nombre", "tipo_zona", "direccion", "telefono", "fecha_apertura", "habilitado"]) +
+        renderSection("Servicios habilitados", "servicios",
+            ["numero_sede", "grse_nombre", "serv_codigo", "serv_nombre", "nivel", "ambulatorio", "hospitalario", "habilitado"]) +
+        renderSection("Capacidades instaladas", "capacidades",
+            ["numero_sede", "grupo_capacidad", "coca_nombre", "cantidad", "modalidad"]) +
+        renderSection("Sanciones", "sanciones") +
+        renderSection("Medidas de seguridad", "medidas_seguridad");
+
+    if (data.geo && data.geo.latitud && data.geo.longitud) {
+        setTimeout(() => {
+            const m = L.map("prestMapMini").setView([data.geo.latitud, data.geo.longitud], 11);
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:'&copy; OSM'}).addTo(m);
+            L.marker([data.geo.latitud, data.geo.longitud]).addTo(m)
+              .bindPopup(`<strong>${data.geo.nom_mpio}</strong><br/>${data.geo.dpto}`).openPopup();
+        }, 100);
+    }
+}
+
+// =========================================================================
+// CLÍNICO sub-vista
+// =========================================================================
+document.getElementById("clinSearchBtn").addEventListener("click", clinicalSearch);
+document.getElementById("clinQ").addEventListener("keydown", (e) => { if (e.key === "Enter") clinicalSearch(); });
+
+async function clinicalSearch() {
+    const kind = document.getElementById("clinKind").value;
+    const q = document.getElementById("clinQ").value.trim();
+    const out = document.getElementById("clinResults");
+    out.innerHTML = '<p class="text-center text-slate-400 py-6 text-sm">Buscando...</p>';
+    try {
+        const params = new URLSearchParams({ limit: "50" });
+        if (q) params.set("q", q);
+        const data = await api(`/catalogs/${kind}/entries?${params.toString()}`);
+        if (!data.entries.length) {
+            out.innerHTML = '<p class="text-center text-slate-400 py-6 text-sm">Sin resultados.</p>';
+            return;
+        }
+        const cols = Object.keys(data.entries[0]).filter(c => !c.startsWith("_"));
+        const head = cols.map(c => `<th class="text-left px-2 py-1 bg-slate-100 text-xs sticky top-0">${c}</th>`).join("");
+        const body = data.entries.map(r =>
+            `<tr class="border-t border-slate-100">${cols.map(c => `<td class="px-2 py-1 text-xs">${escapeHtml(r[c]||"")}</td>`).join("")}</tr>`
+        ).join("");
+        out.innerHTML = `<div class="px-3 py-2 text-xs text-slate-500">${fmtNum(data.total)} resultados (mostrando ${data.entries.length})</div>
+            <table class="w-full"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    } catch(e) {
+        if (e.premium) { showPremium(kind, e.body?.detail?.upgrade_cta?.contact_url); return; }
+        out.innerHTML = `<p class="text-center text-red-600 py-6 text-sm">${e.message}</p>`;
+    }
+}
+
+// =========================================================================
+// CATÁLOGOS sub-vista (lista clásica)
+// =========================================================================
+function renderCatalogsList() {
+    const search = document.getElementById("searchBox").value.toLowerCase();
+    const sourceFilter = document.getElementById("sourceFilter").value;
+    const accessFilter = document.getElementById("accessFilter").value;
+
+    let filtered = CATALOGS;
+    if (search) filtered = filtered.filter(c => c.name.toLowerCase().includes(search));
+    if (sourceFilter) filtered = filtered.filter(c => c.source === sourceFilter);
+    if (accessFilter === "yes") filtered = filtered.filter(c => c.accessible);
+    if (accessFilter === "no") filtered = filtered.filter(c => !c.accessible);
+
+    const tbody = document.getElementById("catalogTbody");
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400">Sin resultados</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filtered.map(c => `
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-2 font-medium">${escapeHtml(c.name)}</td>
+        <td class="px-4 py-2"><span class="text-xs px-2 py-0.5 rounded ${sourceColor(c.source)}">${c.source}</span></td>
+        <td class="px-4 py-2 text-right tabular-nums">${fmtNum(c.row_count)}</td>
+        <td class="px-4 py-2 text-slate-600" title="${fmtDate(c.last_synced)}">${relativeDate(c.last_synced)}</td>
+        <td class="px-4 py-2">${c.accessible
+          ? '<span class="text-xs px-2 py-0.5 rounded bg-green-100 text-green-800">✓ Acceso</span>'
+          : '<span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">🔒 Premium</span>'}</td>
+        <td class="px-4 py-2 text-right">
+          <button data-name="${escapeHtml(c.name)}" data-acc="${c.accessible?"1":"0"}"
+                  class="detail-btn text-indigo-600 hover:underline text-sm">
+            ${c.accessible ? "Detalle" : "Ver estructura"}
+          </button>
+        </td>
+      </tr>`).join("");
+    tbody.querySelectorAll(".detail-btn").forEach(btn => {
+        btn.addEventListener("click", () => openCatalogDetail(btn.dataset.name, btn.dataset.acc === "1"));
+    });
+}
+
+async function openCatalogDetail(name, accessible) {
+    document.getElementById("modalTitle").textContent = name;
+    document.getElementById("modalBody").innerHTML = '<div class="text-center py-8 text-slate-400">Cargando...</div>';
+    modal.classList.remove("hidden");
+    try {
+        const meta = await api(`/catalogs/${encodeURIComponent(name)}`);
+        let entriesHtml = "";
+        if (accessible) {
+            try {
+                const page = await api(`/catalogs/${encodeURIComponent(name)}/entries?limit=20`);
+                entriesHtml = renderEntriesTable(page);
+            } catch(e) {
+                entriesHtml = `<div class="text-red-600 text-sm">${e.message}</div>`;
+            }
+        } else {
+            entriesHtml = `
+              <div class="bg-amber-50 border border-amber-200 rounded p-4 text-sm">
+                <div class="font-semibold mb-1">🔒 Contenido detallado bloqueado</div>
+                <p class="text-slate-700 text-xs mb-2">
+                  Puedes ver la estructura y métricas del catálogo (filas, columnas, tipos).
+                  El detalle de los registros requiere acceso premium.
+                </p>
+                <button onclick="showPremium('${name}')"
+                        class="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white text-xs rounded font-medium">
+                  Desbloquear
+                </button>
+              </div>`;
+        }
+        renderCatalogModal(meta, entriesHtml);
+    } catch(e) {
+        document.getElementById("modalBody").innerHTML = `<div class="text-red-600 text-sm">${e.message}</div>`;
+    }
+}
+
+function renderEntriesTable(page) {
     const sample = page.entries.slice(0, 10);
-    const sampleCols = sample.length > 0 ? Object.keys(sample[0]) : [];
-    const sampleHead = sampleCols.map(c => `<th class="px-2 py-1 text-left">${c}</th>`).join("");
-    const sampleRows = sample.map(row =>
-        `<tr>${sampleCols.map(c => `<td class="px-2 py-1 border-t text-xs">${escapeHtml(String(row[c] ?? ""))}</td>`).join("")}</tr>`
-    ).join("");
-
-    document.getElementById("modalBody").innerHTML = `
-        <div class="grid grid-cols-2 gap-4 mb-4 text-sm">
-            <div><span class="text-slate-500">Fuente:</span> <span class="px-2 py-0.5 rounded text-xs ${sourceColor(meta.source)}">${meta.source}</span></div>
-            <div><span class="text-slate-500">Filas:</span> <strong>${fmtNum(meta.row_count)}</strong></div>
-            <div><span class="text-slate-500">Tabla:</span> <code class="text-xs">${meta.table_name || "—"}</code></div>
-            <div><span class="text-slate-500">Última sync:</span> ${fmtDate(meta.last_synced)}</div>
-            <div class="col-span-2"><span class="text-slate-500">URL fuente:</span> <a href="${meta.source_url}" target="_blank" class="text-indigo-600 hover:underline text-xs">${meta.source_url || "—"}</a></div>
-            <div class="col-span-2"><span class="text-slate-500">Licencia:</span> <span class="text-xs">${meta.license || "—"}</span></div>
-            <div class="col-span-2"><span class="text-slate-500">SHA256:</span> <code class="text-xs">${meta.sha256 || "—"}</code></div>
-            ${meta.description ? `<div class="col-span-2"><span class="text-slate-500">Descripción:</span> ${meta.description}</div>` : ""}
-        </div>
-
-        <div class="mb-4">
-            <h4 class="font-semibold mb-2 text-sm">Esquema (${(meta.schema || []).length} columnas)</h4>
-            <div class="bg-slate-50 rounded p-2 max-h-48 overflow-auto">
-                <table class="w-full text-xs">
-                    <thead><tr class="text-slate-500"><th class="text-left">Columna SQL</th><th class="text-left">Original</th><th class="text-left">Tipo</th></tr></thead>
-                    <tbody>${schemaRows || '<tr><td colspan="3" class="text-slate-400">—</td></tr>'}</tbody>
-                </table>
-            </div>
-        </div>
-
-        <div>
-            <h4 class="font-semibold mb-2 text-sm">Muestra (primeras 10 filas)</h4>
+    const cols = sample.length ? Object.keys(sample[0]) : [];
+    const head = cols.map(c => `<th class="px-2 py-1 text-left text-xs bg-slate-100">${c}</th>`).join("");
+    const rows = sample.map(row =>
+        `<tr>${cols.map(c => `<td class="px-2 py-1 border-t text-xs">${escapeHtml(row[c]??"")}</td>`).join("")}</tr>`).join("");
+    return `<h4 class="font-semibold mb-2 text-sm">Muestra (primeras 10 de ${fmtNum(page.total)})</h4>
             <div class="overflow-auto max-h-80 border border-slate-200 rounded">
-                <table class="w-full text-xs">
-                    <thead class="bg-slate-100 sticky top-0">${sampleHead ? `<tr>${sampleHead}</tr>` : ""}</thead>
-                    <tbody>${sampleRows || '<tr><td class="px-2 py-4 text-center text-slate-400">Sin filas</td></tr>'}</tbody>
-                </table>
-            </div>
+              <table class="w-full text-xs"><thead class="sticky top-0">${head ? `<tr>${head}</tr>`:""}</thead><tbody>${rows}</tbody></table>
+            </div>`;
+}
+
+function renderCatalogModal(meta, entriesHtml) {
+    const schemaRows = (meta.schema || []).map(s => `
+        <tr><td class="font-mono text-xs px-2">${s.col}</td>
+            <td class="text-xs text-slate-500 px-2">${s.from || ""}</td>
+            <td class="text-xs px-2"><code>${s.type}</code></td></tr>
+    `).join("");
+    document.getElementById("modalBody").innerHTML = `
+      <div class="grid grid-cols-2 gap-3 mb-4 text-sm">
+        <div><span class="text-slate-500 text-xs">Fuente:</span> <span class="text-xs px-2 py-0.5 rounded ${sourceColor(meta.source)}">${meta.source}</span></div>
+        <div><span class="text-slate-500 text-xs">Filas:</span> <strong>${fmtNum(meta.row_count)}</strong></div>
+        <div><span class="text-slate-500 text-xs">Tabla:</span> <code class="text-xs">${meta.table_name||"—"}</code></div>
+        <div><span class="text-slate-500 text-xs">Última sync:</span> ${fmtDate(meta.last_synced)}</div>
+        <div class="col-span-2"><span class="text-slate-500 text-xs">URL fuente:</span> <a href="${meta.source_url||"#"}" target="_blank" class="text-indigo-600 hover:underline text-xs">${meta.source_url||"—"}</a></div>
+        <div class="col-span-2"><span class="text-slate-500 text-xs">Licencia:</span> <span class="text-xs">${meta.license||"—"}</span></div>
+        ${meta.description ? `<div class="col-span-2"><span class="text-slate-500 text-xs">Descripción:</span> ${escapeHtml(meta.description)}</div>` : ""}
+      </div>
+      <div class="mb-4">
+        <h4 class="font-semibold mb-2 text-sm">Esquema (${(meta.schema||[]).length} columnas)</h4>
+        <div class="bg-slate-50 rounded max-h-48 overflow-auto">
+          <table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left px-2 py-1">Columna SQL</th><th class="text-left px-2 py-1">Original</th><th class="text-left px-2 py-1">Tipo</th></tr></thead><tbody>${schemaRows||"<tr><td colspan='3'>—</td></tr>"}</tbody></table>
         </div>
-    `;
+      </div>
+      ${entriesHtml}`;
 }
 
-function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-}
-
-// Wiring
-["input", "change"].forEach(ev => {
-    document.getElementById("searchBox").addEventListener(ev, renderCatalogs);
-    document.getElementById("sourceFilter").addEventListener(ev, renderCatalogs);
+["input","change"].forEach(ev => {
+    document.getElementById("searchBox").addEventListener(ev, renderCatalogsList);
+    document.getElementById("sourceFilter").addEventListener(ev, renderCatalogsList);
+    document.getElementById("accessFilter").addEventListener(ev, renderCatalogsList);
 });
-document.getElementById("refreshBtn").addEventListener("click", load);
+document.getElementById("refreshBtn").addEventListener("click", loadCatalogs);
 
-async function load() {
+async function loadCatalogs() {
     try {
         CATALOGS = await api("/catalogs");
         document.getElementById("statCatalogs").textContent = CATALOGS.length;
@@ -309,14 +984,25 @@ async function load() {
         document.getElementById("statRows").textContent = fmtNum(totalRows);
         const lastSync = CATALOGS.map(c => c.last_synced).filter(Boolean).sort().pop();
         document.getElementById("statLastSync").textContent = relativeDate(lastSync);
-        document.getElementById("statSources").textContent = new Set(CATALOGS.map(c => c.source)).size;
-        renderCatalogs();
-    } catch (e) {
+        document.getElementById("statAccessible").textContent = CATALOGS.filter(c => c.accessible).length;
+        renderCatalogsList();
+    } catch(e) {
         document.getElementById("catalogTbody").innerHTML =
             `<tr><td colspan="6" class="text-center py-8 text-red-600">${e.message}</td></tr>`;
     }
 }
-load();
+
+// =========================================================================
+// BOOT
+// =========================================================================
+async function boot() {
+    if (ROLE === "super_admin") document.getElementById("adminTabBtn").classList.remove("hidden");
+    await Promise.all([loadCatalogs(), loadExploreStats(), initGeo(), initPrestadores()]);
+}
+boot();
+
+// expose for inline onclick
+window.showPremium = showPremium;
 </script>
 </body>
 </html>
