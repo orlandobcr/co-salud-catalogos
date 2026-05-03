@@ -26,7 +26,25 @@ from sqlalchemy import text
 
 from ..auth import CurrentUser, get_current_user
 from ..db import query_raw
-from ..semantic_columns import GEO_PUBLIC_CATALOGS
+from ..semantic_columns import (
+    GEO_PUBLIC_CATALOGS,
+    divipola_to_reps_dpto_names,
+    reps_to_divipola_dpto_name,
+)
+
+
+def _build_in_clause_dpto(nombre_dpto: str | None, params: dict, prefix: str = "dpto") -> str | None:
+    """Construye `upper(depa_nombre) IN (...)` expandiendo los Distritos Especiales.
+    Modifica `params` en-place. Devuelve la cláusula SQL o None si no hay filtro."""
+    if not nombre_dpto:
+        return None
+    reps_names = divipola_to_reps_dpto_names(nombre_dpto)
+    placeholders = []
+    for i, name in enumerate(reps_names):
+        key = f"{prefix}_{i}"
+        params[key] = name.upper()
+        placeholders.append(f":{key}")
+    return f"upper(depa_nombre) IN ({', '.join(placeholders)})"
 
 
 router = APIRouter(prefix="/api/v1/explore", tags=["explore (cross-catálogo)"])
@@ -74,20 +92,22 @@ def geo_departamentos(
     if not with_counts:
         return {"items": base}
 
-    counts = {}
+    counts: dict[str, int] = {}
     try:
         for r in query_raw(engine, """
             SELECT depa_nombre AS d, COUNT(DISTINCT codigo_habilitacion) AS n
             FROM salud_reps_habilitados
+            WHERE depa_nombre IS NOT NULL
             GROUP BY depa_nombre
         """):
-            if r["d"]:
-                counts[r["d"].strip().upper()] = r["n"]
+            divipola_name = reps_to_divipola_dpto_name(r["d"])
+            if divipola_name:
+                counts[divipola_name] = counts.get(divipola_name, 0) + (r["n"] or 0)
     except Exception:
         counts = {}
 
     for it in base:
-        key = (it.get("nombre_departamento") or "").strip().upper()
+        key = (it.get("nombre_departamento") or "").strip()
         it["prestadores_count"] = counts.get(key, 0)
     return {"items": base}
 
@@ -124,15 +144,15 @@ def geo_municipios(
     if not with_counts:
         return {"items": municipios, "total": len(municipios)}
 
-    counts = {}
+    counts: dict[str, int] = {}
     try:
         sub_where = ""
         sub_params: dict[str, Any] = {}
-        if cod_dpto or nombre_dpto:
-            depto_name = nombre_dpto or (municipios[0]["dpto"] if municipios else None)
-            if depto_name:
-                sub_where = " WHERE upper(depa_nombre) = upper(:depto)"
-                sub_params["depto"] = depto_name
+        depto_name = nombre_dpto or (municipios[0]["dpto"] if municipios else None)
+        if depto_name:
+            in_clause = _build_in_clause_dpto(depto_name, sub_params, "dpto")
+            if in_clause:
+                sub_where = " WHERE " + in_clause
         for r in query_raw(engine, f"""
             SELECT muni_nombre AS m, COUNT(DISTINCT codigo_habilitacion) AS n
             FROM salud_reps_habilitados
@@ -188,8 +208,9 @@ def search_prestadores(
     table = "salud_reps_servicios" if use_servicios else "salud_reps_habilitados"
 
     if nombre_dpto:
-        where.append("upper(depa_nombre) = upper(:nombre_dpto)")
-        params["nombre_dpto"] = nombre_dpto
+        in_clause = _build_in_clause_dpto(nombre_dpto, params, "dpto")
+        if in_clause:
+            where.append(in_clause)
     if nombre_mpio:
         where.append("upper(muni_nombre) = upper(:nombre_mpio)")
         params["nombre_mpio"] = nombre_mpio
@@ -272,8 +293,9 @@ def prestador_filter_options(
     where = ["1=1"]
     params: dict[str, Any] = {}
     if nombre_dpto:
-        where.append("upper(depa_nombre) = upper(:dpto)")
-        params["dpto"] = nombre_dpto
+        in_clause = _build_in_clause_dpto(nombre_dpto, params, "dpto")
+        if in_clause:
+            where.append(in_clause)
     if nombre_mpio:
         where.append("upper(muni_nombre) = upper(:mpio)")
         params["mpio"] = nombre_mpio
@@ -329,8 +351,9 @@ def prestador_servicios_options(
         where.append("grse_codigo = :grse_codigo")
         params["grse_codigo"] = grse_codigo
     if nombre_dpto:
-        where.append("upper(depa_nombre) = upper(:dpto)")
-        params["dpto"] = nombre_dpto
+        in_clause = _build_in_clause_dpto(nombre_dpto, params, "dpto")
+        if in_clause:
+            where.append(in_clause)
     if nombre_mpio:
         where.append("upper(muni_nombre) = upper(:mpio)")
         params["mpio"] = nombre_mpio

@@ -131,3 +131,61 @@ CLINICAL_TOP = {
     "eapb_codigos": "EAPB (aseguradoras)",
     "glosario_medico": "Glosario médico",
 }
+
+
+# ---------------------------------------------------------------------------
+# Equivalencias DIVIPOLA ↔ REPS para nombres de departamento
+# ---------------------------------------------------------------------------
+#
+# REPS usa los nombres mixed-case y trata los Distritos Especiales (Cali,
+# Cartagena, Barranquilla, Santa Marta, Buenaventura) como "departamentos"
+# propios. DIVIPOLA los pone bajo su departamento real (Valle, Bolívar, etc).
+# Bogotá D.C. también difiere en formato.
+#
+# Para que el dashboard (basado en DIVIPOLA) muestre conteos correctos y los
+# filtros geográficos crucen bien, mantenemos esta tabla de equivalencias.
+
+DPTO_DIVIPOLA_TO_REPS: dict[str, list[str]] = {
+    "VALLE DEL CAUCA": ["Valle del cauca", "Cali", "Buenaventura"],
+    "ATLÁNTICO": ["Atlántico", "Barranquilla"],
+    "BOLÍVAR": ["Bolívar", "Cartagena"],
+    "MAGDALENA": ["Magdalena", "Santa Marta"],
+    "ARCHIPIÉLAGO DE SAN ANDRÉS, PROVIDENCIA Y SANTA CATALINA": [
+        "San Andrés y Providencia",
+    ],
+    "BOGOTÁ, D.C.": ["Bogotá D.C", "Bogotá D.C.", "Bogotá DC"],
+}
+
+
+def divipola_to_reps_dpto_names(divipola_name: str | None) -> list[str]:
+    """Devuelve los nombres tal-como-aparecen en REPS dado el nombre DIVIPOLA.
+
+    Si no hay equivalencia explícita, devuelve [divipola_name] (caso default,
+    el nombre coincide modulo case).
+    """
+    if not divipola_name:
+        return []
+    n = divipola_name.strip()
+    if n in DPTO_DIVIPOLA_TO_REPS:
+        return DPTO_DIVIPOLA_TO_REPS[n]
+    # Buscar también case-insensitive
+    for div, reps_list in DPTO_DIVIPOLA_TO_REPS.items():
+        if div.upper() == n.upper():
+            return reps_list
+    return [n]
+
+
+def reps_to_divipola_dpto_name(reps_name: str | None) -> str | None:
+    """Inverso: dado un nombre como aparece en REPS, encuentra el DIVIPOLA.
+
+    Útil para agregar conteos REPS por departamento DIVIPOLA. Si no hay match
+    explícito, devuelve el nombre en MAYÚSCULAS (que es el formato DIVIPOLA).
+    """
+    if not reps_name:
+        return None
+    rn = reps_name.strip()
+    for div_name, reps_variants in DPTO_DIVIPOLA_TO_REPS.items():
+        for v in reps_variants:
+            if v.upper() == rn.upper():
+                return div_name
+    return rn.upper()
