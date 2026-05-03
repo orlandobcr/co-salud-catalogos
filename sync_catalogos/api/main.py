@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,7 @@ async def audit_middleware(request: Request, call_next):
             engine = request.app.state.engine
             with engine.begin() as conn:
                 conn.execute(insert(api_audit_log).values(
-                    ts=datetime.now(UTC),
+                    ts=datetime.now(timezone.utc),
                     user_id=user_id,
                     username=username,
                     method=request.method,

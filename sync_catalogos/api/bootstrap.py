@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, insert, select
 
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             if existing:
                 print(f"Usuario '{username}' ya existe (id={existing.id})", file=sys.stderr)
                 return 1
-            now = datetime.now(UTC)
+            now = datetime.now(timezone.utc)
             r = conn.execute(insert(api_users).values(
                 username=username,
                 password_hash=hash_password(password),

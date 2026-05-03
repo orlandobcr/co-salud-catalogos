@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, update
@@ -43,7 +43,7 @@ def login(req: LoginRequest, request: Request):
         conn.execute(
             update(api_users)
             .where(api_users.c.id == row.id)
-            .values(updated_at=datetime.now(UTC))
+            .values(updated_at=datetime.now(timezone.utc))
         )
     token, expires_in = create_token(row.username, row.id, row.role)
     return TokenResponse(

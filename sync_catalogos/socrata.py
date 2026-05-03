@@ -84,7 +84,7 @@ def remote_version(dataset_id: str) -> str | None:
     if not ts:
         return None
     try:
-        from datetime import UTC, datetime
-        return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
     except Exception:
         return None

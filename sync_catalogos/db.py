@@ -41,7 +41,7 @@ Idempotente.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -62,7 +62,7 @@ def _parse_iso(ts: str | None) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
+        dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
 

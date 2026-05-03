@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, insert, select, update
@@ -59,7 +59,7 @@ def create_user(
     _: CurrentUser = Depends(require_super_admin),
 ):
     engine = request.app.state.engine
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         existing = conn.execute(
             select(api_users.c.id).where(api_users.c.username == req.username)
@@ -105,7 +105,7 @@ def update_user(
     _: CurrentUser = Depends(require_super_admin),
 ):
     engine = request.app.state.engine
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     updates: dict = {"updated_at": now}
     if req.password is not None:
         updates["password_hash"] = hash_password(req.password)
@@ -140,7 +140,7 @@ def deactivate_user(user_id: int, request: Request, _: CurrentUser = Depends(req
             raise HTTPException(status_code=404, detail="Usuario no existe")
         conn.execute(
             update(api_users).where(api_users.c.id == user_id)
-            .values(is_active=False, updated_at=datetime.now(UTC))
+            .values(is_active=False, updated_at=datetime.now(timezone.utc))
         )
     return None
 
@@ -162,7 +162,7 @@ def grant_permissions(
     if invalid:
         raise HTTPException(status_code=400, detail=f"Catálogos no encontrados: {invalid}")
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         u = conn.execute(select(api_users).where(api_users.c.id == user_id)).first()
         if not u:

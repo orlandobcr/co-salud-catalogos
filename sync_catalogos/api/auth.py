@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
@@ -43,7 +43,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_token(username: str, user_id: int, role: str) -> tuple[str, int]:
     """Devuelve (token, expires_in_seconds)."""
     s = settings()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     expire_at = now + timedelta(minutes=s.jwt_expire_minutes)
     payload = {
         "sub": username,
