@@ -22,7 +22,7 @@ from ..models import (
 )
 
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=TokenResponse, summary="Login con username + contraseña")

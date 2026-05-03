@@ -126,8 +126,9 @@ if (!TOKEN) { window.location.href = "/"; }
 const headers = { Authorization: "Bearer " + TOKEN };
 let CATALOGS = [];
 
+const API = "/api/v1";
 function api(path) {
-    return fetch(path, { headers }).then(r => {
+    return fetch(API + path, { headers }).then(r => {
         if (r.status === 401) { localStorage.clear(); window.location.href = "/"; throw new Error("Sesión expirada"); }
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -167,7 +168,7 @@ roleBadge.className = "px-2 py-0.5 rounded text-xs font-medium " +
 const exp = parseInt(localStorage.getItem("salud_token_exp") || "0");
 document.getElementById("tokenExpires").textContent = exp ? new Date(exp).toLocaleTimeString("es-CO") : "—";
 document.getElementById("curlExample").textContent =
-    `curl -H "Authorization: Bearer ${TOKEN.substring(0, 20)}..." \\\n     ${window.location.origin}/catalogs`;
+    `curl -H "Authorization: Bearer ${TOKEN.substring(0, 20)}..." \\\n     ${window.location.origin}/api/v1/catalogs`;
 
 document.getElementById("copyTokenBtn").addEventListener("click", () => {
     navigator.clipboard.writeText(TOKEN);

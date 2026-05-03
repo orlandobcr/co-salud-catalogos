@@ -25,7 +25,7 @@ from ..models import (
 )
 
 
-router = APIRouter(prefix="/admin", tags=["admin (super_admin only)"])
+router = APIRouter(prefix="/api/v1/admin", tags=["admin (super_admin only)"])
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,7 @@ document.getElementById("apiBase").textContent = window.location.origin;
 // Si ya hay token válido, redirigir al dashboard
 const stored = localStorage.getItem("salud_token");
 if (stored) {
-    fetch("/auth/me", { headers: { Authorization: "Bearer " + stored } })
+    fetch("/api/v1/auth/me", { headers: { Authorization: "Bearer " + stored } })
         .then(r => { if (r.ok) window.location.href = "/dashboard"; });
 }
 
@@ -65,7 +65,7 @@ document.getElementById("loginForm").addEventListener("submit", async (ev) => {
     btn.disabled = true;
     btn.textContent = "Entrando...";
     try {
-        const res = await fetch("/auth/login", {
+        const res = await fetch("/api/v1/auth/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

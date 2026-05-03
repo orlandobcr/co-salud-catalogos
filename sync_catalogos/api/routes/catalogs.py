@@ -12,7 +12,7 @@ from ..models import CatalogDetail, CatalogSummary, EntriesPage
 from ..settings import settings
 
 
-router = APIRouter(prefix="/catalogs", tags=["catalogs"])
+router = APIRouter(prefix="/api/v1/catalogs", tags=["catalogs"])
 
 
 def _allowed_set(user: CurrentUser) -> set[str] | None:

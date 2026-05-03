@@ -84,7 +84,7 @@ async def audit_middleware(request: Request, call_next):
     # Solo loguea endpoints de la API, no estáticos / docs / landing
     path = request.url.path
     SKIP_PREFIXES = ("/static", "/dashboard", "/openapi", "/docs", "/redoc", "/health")
-    if path != "/" and not path.startswith(SKIP_PREFIXES):
+    if path.startswith("/api/") and not path.startswith(SKIP_PREFIXES):
         username = None
         user_id = None
         # Best-effort: decode el bearer token sin DB lookup
@@ -146,7 +146,7 @@ def _build_openapi(allowed: list[str] | None) -> dict[str, Any]:
     # Inyecta enum en path params {name} de los endpoints de catálogos
     paths = schema.get("paths", {})
     for path, ops in paths.items():
-        if "/catalogs/{name}" not in path:
+        if "/api/v1/catalogs/{name}" not in path:
             continue
         for op in ops.values():
             if not isinstance(op, dict):
