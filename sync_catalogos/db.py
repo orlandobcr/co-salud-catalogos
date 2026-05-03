@@ -1,5 +1,11 @@
 """DB sinks — escribe catálogos a un motor de persistencia opcional.
 
+NOTA streaming: las funciones write_catalog soportan tanto `entries=list[dict]`
+como `entries=Iterator[dict]`. Con iterator, NO se materializa todo en memoria;
+se hace una pasada de inferencia con sample limitado y luego se inserta en
+batches sin acumular más allá de `_BATCH_SIZE`. Útil para servers con poca RAM.
+
+
 **Schema tipado por catálogo** (no genérico): cada catálogo se mapea a su
 propia tabla / colección con columnas inferidas desde los datos reales.
 
@@ -50,7 +56,11 @@ from .schema import CatalogFile
 
 log = logging.getLogger(__name__)
 
-_BATCH_SIZE = 1000
+import os as _os
+
+# Batch size de inserts. En servers chicos (1GB RAM) bajar a 200 para minimizar
+# el spike de memoria por chunk. Configurable via env SALUD_DB_BATCH_SIZE.
+_BATCH_SIZE = int(_os.environ.get("SALUD_DB_BATCH_SIZE", "1000"))
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
