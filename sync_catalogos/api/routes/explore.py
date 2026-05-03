@@ -351,13 +351,28 @@ def prestador_filter_options(
 
     grupos_servicio = []
     try:
+        # Filtrar el ruido: ~250 filas (0.1%) en reps_servicios tienen los
+        # campos grse_codigo/grse_nombre corridos. Mantener solo códigos
+        # numéricos con nombre alfabético no trivial.
         grupos_servicio = query_raw(engine, f"""
-            SELECT DISTINCT grse_codigo, grse_nombre
+            SELECT grse_codigo, grse_nombre, COUNT(*) as n
             FROM salud_reps_servicios
-            WHERE {where_sql} AND grse_nombre IS NOT NULL
-            ORDER BY grse_nombre
-            LIMIT 100
+            WHERE {where_sql}
+              AND grse_nombre IS NOT NULL
+              AND length(grse_nombre) > 3
+              AND grse_codigo ~ '^[0-9]+$'
+            GROUP BY grse_codigo, grse_nombre
+            ORDER BY n DESC
+            LIMIT 50
         """, params)
+        # Dejar solo el nombre canónico por código (el de mayor n)
+        seen: set[str] = set()
+        deduped = []
+        for g in grupos_servicio:
+            if g["grse_codigo"] not in seen:
+                seen.add(g["grse_codigo"])
+                deduped.append({"grse_codigo": g["grse_codigo"], "grse_nombre": g["grse_nombre"]})
+        grupos_servicio = sorted(deduped, key=lambda x: x["grse_nombre"])
     except Exception:
         pass
 
@@ -402,6 +417,9 @@ def prestador_servicios_options(
         SELECT DISTINCT serv_codigo, serv_nombre, grse_codigo, grse_nombre
         FROM salud_reps_servicios
         WHERE {where_sql}
+          AND serv_codigo ~ '^[0-9]+$'
+          AND length(serv_nombre) > 2
+          AND length(grse_nombre) > 3
         ORDER BY serv_nombre
         LIMIT :limit
     """, params)

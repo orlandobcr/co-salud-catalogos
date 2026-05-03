@@ -585,7 +585,15 @@ async function initPrestadores() {
     const opts = await api("/explore/prestadores/filters");
     fillSelect("filtClase", opts.clases_prestador, "— clase —");
     fillSelect("filtNaju", opts.naturalezas_juridicas, "— naturaleza —");
-    fillSelect("filtGrupoServ", opts.grupos_servicio.map(g => g.grse_nombre), "— grupo servicio —");
+    fillGroupSelect("filtGrupoServ", opts.grupos_servicio, "— grupo servicio —");
+}
+
+function fillGroupSelect(id, groups, placeholder) {
+    // groups: [{grse_codigo, grse_nombre}, ...] — value = código (más estable que el nombre)
+    const el = document.getElementById(id);
+    el.innerHTML = `<option value="">${placeholder}</option>` +
+        groups.filter(g => g.grse_codigo && g.grse_nombre)
+              .map(g => `<option value="${escapeHtml(g.grse_codigo)}" data-name="${escapeHtml(g.grse_nombre)}">${escapeHtml(g.grse_nombre)}</option>`).join("");
 }
 
 function fillSelect(id, values, placeholder) {
@@ -622,20 +630,19 @@ async function onChangeDpto() {
 document.getElementById("filtDpto").addEventListener("change", onChangeDpto);
 
 document.getElementById("filtGrupoServ").addEventListener("change", async () => {
-    const grupo = document.getElementById("filtGrupoServ").value;
+    const grupoCod = document.getElementById("filtGrupoServ").value;
     const servSel = document.getElementById("filtServicio");
     servSel.value = "";  // limpia cualquier valor previo antes de recargar
-    if (!grupo) {
+    if (!grupoCod) {
         servSel.innerHTML = '<option value="">— servicio —</option>';
         servSel.disabled = true;
         return;
     }
     servSel.disabled = true; servSel.innerHTML = '<option value="">Cargando...</option>';
     try {
-        const opts = await api(`/explore/prestadores/servicios?limit=500`);
-        const matches = opts.items.filter(s => s.grse_nombre === grupo);
+        const opts = await api(`/explore/prestadores/servicios?grse_codigo=${encodeURIComponent(grupoCod)}&limit=500`);
         servSel.innerHTML = '<option value="">— servicio (todos del grupo) —</option>' +
-            matches.map(s => `<option value="${escapeHtml(s.serv_codigo)}">${escapeHtml(s.serv_codigo)} · ${escapeHtml(s.serv_nombre)}</option>`).join("");
+            opts.items.map(s => `<option value="${escapeHtml(s.serv_codigo)}">${escapeHtml(s.serv_codigo)} · ${escapeHtml(s.serv_nombre)}</option>`).join("");
         servSel.disabled = false;
     } catch(e) { servSel.innerHTML = '<option value="">Error cargando</option>'; }
 });
@@ -680,9 +687,7 @@ async function runPrestadoresSearch(reset) {
     if (f("filtClase")) params.set("clase_prestador", f("filtClase"));
     if (f("filtNaju")) params.set("naturaleza", f("filtNaju"));
     if (f("filtServicio")) params.set("serv_codigo", f("filtServicio"));
-    else if (f("filtGrupoServ")) {
-        // Resolve grupo to code? For now, no — solo aplica si se elige servicio.
-    }
+    else if (f("filtGrupoServ")) params.set("grse_codigo", f("filtGrupoServ"));
     if (f("filtEse")) params.set("ese", f("filtEse"));
     if (f("filtQ")) params.set("q", f("filtQ"));
     params.set("limit", PAGE_SIZE);
