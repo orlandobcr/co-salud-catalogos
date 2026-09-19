@@ -473,6 +473,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("listar", help="lista los cortes existentes")
 
+    p_reg = sub.add_parser(
+        "registrar",
+        help="indexa en salud_cortes un corte que ya está en disco",
+    )
+    p_reg.add_argument("corte")
+    p_reg.add_argument("--db", required=True)
+
     p_diff = sub.add_parser("diff", help="altas y bajas entre dos cortes")
     p_diff.add_argument("a")
     p_diff.add_argument("b")
@@ -532,6 +539,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"corte {corte_id}: {len(cats)} catálogos, {filas:,} filas")
         print(f"  escritos: {man['_escritos']}   reusados del corte anterior: {man['_reusados']}")
         print(f"  tamaño en disco: {tam/1e6:.1f} MB   anterior: {man.get('previous') or '—'}")
+        return 0
+
+    if args.cmd == "registrar":
+        import sqlalchemy as sa
+        man = load_manifest(root, args.corte)
+        registrar_en_db(sa.create_engine(args.db), man)
+        print(f"corte {args.corte} indexado: {len(man.get('catalogos') or {})} catálogos")
         return 0
 
     if args.cmd == "diff":
