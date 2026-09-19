@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -166,16 +167,19 @@ def write_catalog_gz(path: Path, metadata: dict, entries: Iterator[dict]) -> tup
         with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=6) as f:
             f.write('{"metadata":')
             json.dump(metadata, f, ensure_ascii=False)
-            f.write(',"entries":[')
+            # Una entry por línea: sigue siendo un documento JSON válido, pero
+            # se puede leer en streaming sin parsear el archivo entero. Con
+            # 1,44 M de filas en un solo catálogo, `json.load` no es opción.
+            f.write(',"entries":[\n')
             primero = True
             for entry in entries:
                 hasher.update(entry)
                 if not primero:
-                    f.write(",")
+                    f.write(",\n")
                 f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True,
                                    separators=(",", ":")))
                 primero = False
-            f.write("]}")
+            f.write("\n]}")
         os.replace(tmp, path)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -184,9 +188,29 @@ def write_catalog_gz(path: Path, metadata: dict, entries: Iterator[dict]) -> tup
 
 
 def read_entries_gz(path: Path) -> Iterator[dict]:
-    """Lee las entries de un `.json.gz` de corte. Carga el archivo entero."""
+    """Emite las entries de un `.json.gz` de corte, una por una.
+
+    Se apoya en que el escritor pone exactamente una entry por línea: así se
+    parsea de a una fila en vez de cargar el catálogo completo en memoria.
+    """
     with gzip.open(path, "rt", encoding="utf-8") as f:
-        return iter(json.load(f).get("entries") or [])
+        f.readline()                      # {"metadata":{...},"entries":[
+        for linea in f:
+            linea = linea.rstrip("\n")
+            if not linea or linea == "]}":
+                break
+            if linea.endswith(","):
+                linea = linea[:-1]
+            yield json.loads(linea)
+
+
+def read_metadata_gz(path: Path) -> dict:
+    """Sólo la metadata de un `.json.gz`, sin tocar las filas."""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        cabecera = f.readline().rstrip("\n")
+    if cabecera.endswith(',"entries":['):
+        cabecera = cabecera[: -len(',"entries":[')] + "}"
+    return json.loads(cabecera).get("metadata", {})
 
 
 # ---------------------------------------------------------------------------
@@ -235,15 +259,23 @@ def crear_corte(
     corte_id: str,
     *,
     previous: str | None = None,
+    encadenar: bool = True,
     notes: str = "",
     progress_cb=None,
 ) -> dict:
-    """Exporta el estado actual de la base como un corte nuevo."""
+    """Exporta el estado actual de la base como un corte nuevo.
+
+    Con `encadenar=False` no se reutiliza nada del corte anterior y se escriben
+    todos los catálogos. Es lo correcto para un corte histórico, que es
+    cronológicamente anterior a los existentes y sale de otra base.
+    """
     if (root / corte_id / MANIFEST).exists():
         raise FileExistsError(f"el corte {corte_id} ya existe — los cortes son inmutables")
 
     anteriores = listar_cortes(root)
-    if previous is None and anteriores:
+    if not encadenar:
+        previous = None
+    elif previous is None and anteriores:
         previous = anteriores[-1]
     man_prev = load_manifest(root, previous) if previous else {"catalogos": {}}
     prev_cats = man_prev.get("catalogos") or {}
@@ -431,6 +463,10 @@ def main(argv: list[str] | None = None) -> int:
     p_crear.add_argument("--id", help="id del corte (default: fecha de hoy)")
     p_crear.add_argument("--db", required=True, help="URL SQLAlchemy de la base")
     p_crear.add_argument("--previous", help="corte anterior (default: el último)")
+    p_crear.add_argument("--sin-previo", dest="sin_previo", action="store_true",
+                         help="no encadenar con ningún corte anterior: escribe todos los "
+                              "catálogos. Para cortes históricos, que son cronológicamente "
+                              "anteriores a los ya existentes y vienen de otra base.")
     p_crear.add_argument("--notes", default="", help="nota libre para el manifest")
     p_crear.add_argument("--no-registrar", action="store_true",
                          help="no escribir el índice en la tabla salud_cortes")
@@ -470,12 +506,24 @@ def main(argv: list[str] | None = None) -> int:
         corte_id = args.id or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         engine = sa.create_engine(args.db)
 
-        def _prog(i, total, nombre):
-            print(f"\r  [{i}/{total}] {nombre[:44]:44s}", end="", flush=True)
+        tty = sys.stdout.isatty()
 
+        def _prog(i, total, nombre):
+            # En un log (no tty) el \r no borra nada y quedan los 316 nombres
+            # en una sola línea ilegible: ahí se reporta cada 50.
+            if tty:
+                print(f"\r  [{i}/{total}] {nombre[:44]:44s}", end="", flush=True)
+            elif i % 50 == 0 or i == total:
+                print(f"  [{i}/{total}] {nombre}", flush=True)
+
+        if args.sin_previo and args.previous:
+            print("error: --sin-previo y --previous son excluyentes", file=sys.stderr)
+            return 2
         man = crear_corte(engine, root, corte_id, previous=args.previous,
-                          notes=args.notes, progress_cb=_prog)
-        print()
+                          encadenar=not args.sin_previo, notes=args.notes,
+                          progress_cb=_prog)
+        if tty:
+            print()
         if not args.no_registrar:
             registrar_en_db(engine, man)
         cats = man["catalogos"]
