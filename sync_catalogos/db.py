@@ -62,6 +62,9 @@ import os as _os
 # el spike de memoria por chunk. Configurable via env SALUD_DB_BATCH_SIZE.
 _BATCH_SIZE = int(_os.environ.get("SALUD_DB_BATCH_SIZE", "1000"))
 
+# Sufijo de la tabla de staging que usa el swap de `write_catalog_stream`.
+_STAGE_SUFFIX = "__stage"
+
 
 def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
@@ -171,6 +174,18 @@ class SqlSink:
         self._tables[table_name] = table
         return table, table_name
 
+    def _build_named_table(self, table_name: str, schema: list[ColumnSpec]):
+        """Igual que `_build_catalog_table` pero con nombre explícito y sin caché.
+
+        Se usa para la tabla de staging del swap, que es efímera.
+        """
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        cols = [Column("_idx", Integer, primary_key=True)]
+        for spec in schema:
+            cols.append(Column(spec.name, _sql_type_for(spec), nullable=spec.nullable))
+        return Table(table_name, MetaData(), *cols)
+
     def write_catalog(self, catalog: CatalogFile, *, batch_size: int = _BATCH_SIZE) -> None:
         import json
         from sqlalchemy import delete, insert
@@ -235,7 +250,6 @@ class SqlSink:
         batch_size: int = _BATCH_SIZE,
         sample_rows: int = 4000,
         force_text: bool = True,
-        recreate: bool = True,
         progress_cb=None,
     ) -> tuple[int, str]:
         """Escribe un catálogo consumiendo un iterable de páginas (listas de filas).
@@ -253,10 +267,14 @@ class SqlSink:
         TEXT no hay coerción posible que falle. En Postgres TEXT no tiene coste
         frente a VARCHAR.
 
-        `recreate`: dropea la tabla antes de crearla. Necesario cuando ya existe
-        con un esquema inferido de datos distintos: `create(checkfirst=True)` no
-        altera una tabla existente, así que los VARCHAR viejos harían fallar el
-        insert de valores más largos.
+        La escritura va a una tabla de staging y al final se hace el swap con
+        DROP + RENAME. Dos razones:
+
+        - `create(checkfirst=True)` no altera una tabla existente, así que los
+          VARCHAR inferidos de datos viejos rechazarían valores nuevos más largos.
+        - Dropear la tabla viva al principio toma un ACCESS EXCLUSIVE que la deja
+          ilegible durante toda la descarga. Con el swap, ese lock dura lo que
+          tarda un RENAME.
         """
         import itertools
         import json
@@ -284,20 +302,20 @@ class SqlSink:
             schema = [_replace(spec, sql_type_name="TEXT") for spec in schema]
         del sample
 
+        from sqlalchemy import text
+
         table_name = sanitize_table_name(m.name)
-        table = None
-        if schema:
-            table, table_name = self._build_catalog_table(m.name, schema)
+        stage_name = table_name[: 63 - len(_STAGE_SUFFIX)] + _STAGE_SUFFIX
+        stage = self._build_named_table(stage_name, schema) if schema else None
 
         n = 0
-        with self.engine.begin() as conn:
-            if table is not None:
-                if recreate:
-                    table.drop(conn, checkfirst=True)
-                table.create(conn, checkfirst=True)
-                if not recreate:
-                    conn.execute(delete(table))
-
+        if stage is not None:
+            # Fase 1 — llenar la tabla de staging. Nadie la lee, así que ni el
+            # DDL ni las inserciones bloquean al API.
+            with self.engine.begin() as conn:
+                stage.drop(conn, checkfirst=True)
+                stage.create(conn)
+            with self.engine.begin() as conn:
                 batch: list[dict] = []
                 for page in itertools.chain(buffered, it):
                     for entry in page:
@@ -312,45 +330,59 @@ class SqlSink:
                         batch.append(row)
                         n += 1
                         if len(batch) >= batch_size:
-                            conn.execute(insert(table), batch)
+                            conn.execute(insert(stage), batch)
                             batch.clear()
                             if progress_cb is not None:
                                 progress_cb(n)
                 if batch:
-                    conn.execute(insert(table), batch)
+                    conn.execute(insert(stage), batch)
                     batch.clear()
                 if progress_cb is not None:
                     progress_cb(n)
 
-            sha = hasher.hexdigest()
-            meta_row = {
-                "name": m.name,
-                "description": m.description or None,
-                "source": m.source,
-                "source_url": m.source_url or None,
-                "source_id": m.source_id,
-                "version": m.version,
-                "license": m.license or None,
-                "row_count": n,
-                "last_synced": _parse_iso(m.last_synced),
-                "sha256": sha,
-                "notes": m.notes or None,
-                "table_name": table_name,
-                "schema_json": json.dumps(
-                    [
-                        {
-                            "col": s.name,
-                            "from": s.original,
-                            "type": s.sql_type_name,
-                            "nullable": s.nullable,
-                        }
-                        for s in schema
-                    ],
-                    ensure_ascii=False,
-                )
-                if schema
-                else None,
-            }
+        sha = hasher.hexdigest()
+        meta_row = {
+            "name": m.name,
+            "description": m.description or None,
+            "source": m.source,
+            "source_url": m.source_url or None,
+            "source_id": m.source_id,
+            "version": m.version,
+            "license": m.license or None,
+            "row_count": n,
+            "last_synced": _parse_iso(m.last_synced),
+            "sha256": sha,
+            "notes": m.notes or None,
+            "table_name": table_name,
+            "schema_json": json.dumps(
+                [
+                    {
+                        "col": s.name,
+                        "from": s.original,
+                        "type": s.sql_type_name,
+                        "nullable": s.nullable,
+                    }
+                    for s in schema
+                ],
+                ensure_ascii=False,
+            )
+            if schema
+            else None,
+        }
+        # Fase 2 — swap. El lock exclusivo sobre la tabla viva dura lo que tarda
+        # un DROP + RENAME, no lo que tarda la descarga entera.
+        with self.engine.begin() as conn:
+            if stage is not None:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+                conn.execute(text(f'ALTER TABLE "{stage_name}" RENAME TO "{table_name}"'))
+                # El índice de la PK conserva el nombre de staging; sin renombrarlo,
+                # la siguiente corrida choca al recrear la tabla de staging.
+                try:
+                    conn.execute(text(
+                        f'ALTER INDEX "{stage_name}_pkey" RENAME TO "{table_name}_pkey"'
+                    ))
+                except Exception:  # motores sin ALTER INDEX (sqlite, mysql)
+                    log.debug("db.pkey_rename_skipped", extra={"table": table_name})
             conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
             conn.execute(insert(self.t_meta).values(**meta_row))
 
