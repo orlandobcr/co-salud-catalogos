@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -167,14 +168,31 @@ def _base_payload(state: PageState, code: str) -> dict[str, str]:
     }
 
 
-def fetch_all(
+@dataclass
+class Page:
+    """Una página del grid, tal como la devolvió el servidor."""
+
+    rows: list[dict[str, Any]]
+    index: int                 # 1-based
+    total_items: int | None    # el "Items NN" que reporta el grid
+    columns: list[str]
+
+
+def iter_pages(
     code: str,
     *,
     page_size: int = DEFAULT_PAGE_SIZE,
-    progress_cb=None,
     use_proxy: bool = True,
-) -> tuple[list[dict[str, Any]], int | None]:
-    """Fetch all rows of a SISPRO reference table by Code."""
+) -> Iterator[Page]:
+    """Emite el grid página por página, sin acumular nada en memoria.
+
+    Pensado para catálogos que no caben en RAM (`sispro_cups_gr_servicios` son
+    ~1,44 M de filas). Lo único que crece con el número de páginas es el set de
+    digests de la guarda de integridad: 32 bytes por página.
+
+    La página 1 se emite siempre, incluso vacía, para que el llamador reciba el
+    `total_items` que reporta el grid.
+    """
     url = _build_url(code)
     headers = {
         "User-Agent": USER_AGENT,
@@ -209,20 +227,19 @@ def fetch_all(
     tree = lxml_html.fromstring(r.content)
     state = _extract_state(tree)
 
-    # ---- Step 3: parse first page rows
+    # ---- Step 3: first page
     rows = _parse_rows(tree, state.columns)
-    if progress_cb is not None:
-        progress_cb(len(rows))
-    all_rows = list(rows)
+    yield Page(rows=rows, index=1, total_items=total, columns=state.columns)
 
     # ---- Step 4: walk the pager with Next until it runs out
     seen_digests = {_batch_digest(rows)}
     page = 1
+    emitted = len(rows)
     # Cota dura: si el servidor nunca deja de ofrecer Next, no girar para siempre.
     max_pages = ((total + page_size - 1) // page_size) if total else 10_000
 
     while state.has_next and page < max_pages:
-        if total is not None and len(all_rows) >= total:
+        if total is not None and emitted >= total:
             break
         payload_page = {
             **_base_payload(state, code),
@@ -257,14 +274,33 @@ def fetch_all(
                 f"reporta estar en la {state.page_index}."
             )
 
-        all_rows.extend(rows)
-        if progress_cb is not None:
-            progress_cb(len(all_rows))
+        emitted += len(rows)
+        yield Page(rows=rows, index=page, total_items=total, columns=state.columns)
 
-    if total is not None and len(all_rows) != total:
+    if total is not None and emitted != total:
         log.warning(
             "sispro.count_mismatch",
-            extra={"code": code, "expected": total, "got": len(all_rows)},
+            extra={"code": code, "expected": total, "got": emitted},
         )
 
+
+def fetch_all(
+    code: str,
+    *,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    progress_cb=None,
+    use_proxy: bool = True,
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Fetch all rows of a SISPRO reference table by Code.
+
+    Envoltorio sobre `iter_pages` que materializa todo en una lista. Cómodo
+    para catálogos chicos; para los grandes usar `iter_pages` directamente.
+    """
+    all_rows: list[dict[str, Any]] = []
+    total: int | None = None
+    for page in iter_pages(code, page_size=page_size, use_proxy=use_proxy):
+        total = page.total_items
+        all_rows.extend(page.rows)
+        if progress_cb is not None:
+            progress_cb(len(all_rows))
     return all_rows, total

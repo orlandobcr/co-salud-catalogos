@@ -227,6 +227,135 @@ class SqlSink:
                 if rows:
                     conn.execute(insert(table), rows)
 
+    def write_catalog_stream(
+        self,
+        metadata,
+        pages,
+        *,
+        batch_size: int = _BATCH_SIZE,
+        sample_rows: int = 4000,
+        force_text: bool = True,
+        recreate: bool = True,
+        progress_cb=None,
+    ) -> tuple[int, str]:
+        """Escribe un catálogo consumiendo un iterable de páginas (listas de filas).
+
+        Memoria constante: sólo se mantienen en RAM el lote de inserción y las
+        primeras `sample_rows` filas usadas para inferir el esquema. Pensado
+        para catálogos que no caben en memoria.
+
+        Devuelve `(row_count, sha256)`, calculados sobre la marcha. El sha256 es
+        el mismo que produciría `hash_entries` sobre la lista completa.
+
+        `force_text`: en streaming el esquema se infiere de una muestra, no del
+        total. Si la inferencia se equivoca, `coerce_value` devuelve None y la
+        fila pierde el dato en silencio — inaceptable. Con todas las columnas en
+        TEXT no hay coerción posible que falle. En Postgres TEXT no tiene coste
+        frente a VARCHAR.
+
+        `recreate`: dropea la tabla antes de crearla. Necesario cuando ya existe
+        con un esquema inferido de datos distintos: `create(checkfirst=True)` no
+        altera una tabla existente, así que los VARCHAR viejos harían fallar el
+        insert de valores más largos.
+        """
+        import itertools
+        import json
+        from dataclasses import replace as _replace
+
+        from sqlalchemy import delete, insert
+
+        from .io import EntriesHasher
+
+        m = metadata
+        hasher = EntriesHasher()
+        it = iter(pages)
+
+        # Bufferear lo mínimo para inferir el esquema
+        buffered: list[list] = []
+        sample: list[dict] = []
+        for page in it:
+            buffered.append(page)
+            sample.extend(r for r in page if isinstance(r, dict))
+            if len(sample) >= sample_rows:
+                break
+
+        schema = infer_schema(sample) if sample else []
+        if force_text:
+            schema = [_replace(spec, sql_type_name="TEXT") for spec in schema]
+        del sample
+
+        table_name = sanitize_table_name(m.name)
+        table = None
+        if schema:
+            table, table_name = self._build_catalog_table(m.name, schema)
+
+        n = 0
+        with self.engine.begin() as conn:
+            if table is not None:
+                if recreate:
+                    table.drop(conn, checkfirst=True)
+                table.create(conn, checkfirst=True)
+                if not recreate:
+                    conn.execute(delete(table))
+
+                batch: list[dict] = []
+                for page in itertools.chain(buffered, it):
+                    for entry in page:
+                        if not isinstance(entry, dict):
+                            continue
+                        hasher.update(entry)
+                        row = {"_idx": n}
+                        for spec in schema:
+                            row[spec.name] = coerce_value(
+                                entry.get(spec.original), spec.sql_type_name
+                            )
+                        batch.append(row)
+                        n += 1
+                        if len(batch) >= batch_size:
+                            conn.execute(insert(table), batch)
+                            batch.clear()
+                            if progress_cb is not None:
+                                progress_cb(n)
+                if batch:
+                    conn.execute(insert(table), batch)
+                    batch.clear()
+                if progress_cb is not None:
+                    progress_cb(n)
+
+            sha = hasher.hexdigest()
+            meta_row = {
+                "name": m.name,
+                "description": m.description or None,
+                "source": m.source,
+                "source_url": m.source_url or None,
+                "source_id": m.source_id,
+                "version": m.version,
+                "license": m.license or None,
+                "row_count": n,
+                "last_synced": _parse_iso(m.last_synced),
+                "sha256": sha,
+                "notes": m.notes or None,
+                "table_name": table_name,
+                "schema_json": json.dumps(
+                    [
+                        {
+                            "col": s.name,
+                            "from": s.original,
+                            "type": s.sql_type_name,
+                            "nullable": s.nullable,
+                        }
+                        for s in schema
+                    ],
+                    ensure_ascii=False,
+                )
+                if schema
+                else None,
+            }
+            conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
+            conn.execute(insert(self.t_meta).values(**meta_row))
+
+        return n, sha
+
     def close(self) -> None:
         self.engine.dispose()
 

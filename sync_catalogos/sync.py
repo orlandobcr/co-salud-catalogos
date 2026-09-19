@@ -87,6 +87,7 @@ def sync_one(
     consent: bool = False,
     write_json: bool = True,
     db_sink=None,
+    stream: bool = False,
 ) -> dict:
     """Sincroniza un solo catálogo. Devuelve un dict de resultado para el CLI."""
     out_path = catalogs_root() / src.output_path
@@ -117,6 +118,54 @@ def sync_one(
             sys.stdout.flush()
 
     use_proxy = should_use_proxy_for_kind(src.kind)
+
+    if stream:
+        # Modo página a página: memoria constante, sin materializar el catálogo.
+        # Necesario para los que no caben en RAM (sispro_cups_gr_servicios,
+        # ~1,44 M de filas contra los 366 MB libres del server).
+        if src.kind != "sispro_aspx":
+            return {
+                "name": src.name, "kind": src.kind, "skipped": True,
+                "reason": "--stream sólo está implementado para sispro_aspx",
+            }
+        if db_sink is None:
+            return {
+                "name": src.name, "kind": src.kind, "skipped": True,
+                "reason": "--stream escribe directo a la DB: requiere --db",
+            }
+        assert src.sispro_code
+        try:
+            pages = (
+                pg.rows for pg in sispro.iter_pages(
+                    src.sispro_code,
+                    page_size=src.sispro_page_size,
+                    use_proxy=use_proxy,
+                )
+            )
+            metadata = _build_metadata(src, [], _now_iso())
+            rows_written, sha = db_sink.write_catalog_stream(
+                metadata, pages, progress_cb=_progress if verbose else None,
+            )
+        except Exception as e:
+            if verbose:
+                sys.stdout.write("\n")
+            return {
+                "name": src.name, "kind": src.kind, "error": str(e),
+                "duration_s": round(time.perf_counter() - started, 2),
+            }
+        if verbose:
+            sys.stdout.write("\n")
+        return {
+            "name": src.name,
+            "kind": src.kind,
+            "rows": rows_written,
+            "version": metadata.version,
+            "sha256_short": sha[:12],
+            "duration_s": round(time.perf_counter() - started, 2),
+            "sinks": ["db"],
+            "streamed": True,
+        }
+
     try:
         if src.kind == "socrata":
             assert src.socrata_dataset_id
@@ -206,6 +255,7 @@ def sync_all(
     consent: bool = False,
     write_json: bool = True,
     db_sink=None,
+    stream: bool = False,
 ) -> list[dict]:
     results: list[dict] = []
     for src in REGISTRY:
@@ -215,7 +265,7 @@ def sync_all(
             continue
         results.append(sync_one(
             src, dry_run=dry_run, consent=consent,
-            write_json=write_json, db_sink=db_sink,
+            write_json=write_json, db_sink=db_sink, stream=stream,
         ))
     return results
 
@@ -253,6 +303,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Descarga y escribe página por página, con memoria constante, en vez "
+            "de acumular el catálogo entero en RAM. Sólo sispro_aspx; requiere "
+            "--db y no escribe JSON. Recrea la tabla destino y usa columnas TEXT."
+        ),
+    )
+    ap.add_argument(
         "--no-write-json",
         dest="no_write_json",
         action="store_true",
@@ -264,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_write_json and not args.db:
         print("error: --no-write-json requiere --db", file=sys.stderr)
         return 2
+    if args.stream:
+        if not args.db:
+            print("error: --stream requiere --db", file=sys.stderr)
+            return 2
+        write_json = False
 
     db_sink = None
     if args.db:
@@ -286,13 +350,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         result = sync_one(
             src, dry_run=args.dry_run, consent=args.consent,
-            write_json=write_json, db_sink=db_sink,
+            write_json=write_json, db_sink=db_sink, stream=args.stream,
         )
         results = [result]
     else:
         results = sync_all(
             kind=args.kind, dry_run=args.dry_run, consent=args.consent,
-            write_json=write_json, db_sink=db_sink,
+            write_json=write_json, db_sink=db_sink, stream=args.stream,
         )
 
     if db_sink is not None:
@@ -307,7 +371,8 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print(f"Sincronizados: {len(ok)}  con error: {len(bad)}  saltados: {len(skip)}")
         for r in ok:
-            print(f"  ✓ {r['name']:28s}  {r.get('rows', '-'):>8}  {r.get('duration_s', '-')}s  → {r.get('path')}")
+            dest = r.get("path") or "+".join(r.get("sinks") or []) or "-"
+            print(f"  ✓ {r['name']:28s}  {r.get('rows', '-'):>8}  {r.get('duration_s', '-')}s  → {dest}")
         for r in bad:
             print(f"  ✗ {r['name']:28s}  ERROR: {r['error']}")
         for r in skip:

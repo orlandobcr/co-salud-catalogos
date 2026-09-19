@@ -32,3 +32,37 @@ def write_catalog(path: Path, catalog: CatalogFile) -> None:
 def hash_entries(entries: list) -> str:
     body = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+class EntriesHasher:
+    """Calcula el mismo sha256 que `hash_entries` sin materializar la lista.
+
+    `hash_entries` serializa la lista completa con `sort_keys` y separadores
+    compactos; eso equivale a "[" + ",".join(dumps(fila)) + "]". Alimentando el
+    hash con esas mismas piezas se obtiene byte a byte el mismo digest, lo que
+    permite comparar un catálogo escrito en streaming contra uno escrito de
+    una sola vez.
+    """
+
+    def __init__(self) -> None:
+        self._h = hashlib.sha256()
+        self._h.update(b"[")
+        self._empty = True
+        self._count = 0
+
+    def update(self, entry) -> None:
+        chunk = json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if not self._empty:
+            self._h.update(b",")
+        self._h.update(chunk.encode("utf-8"))
+        self._empty = False
+        self._count += 1
+
+    def hexdigest(self) -> str:
+        h = self._h.copy()
+        h.update(b"]")
+        return h.hexdigest()
+
+    @property
+    def count(self) -> int:
+        return self._count
