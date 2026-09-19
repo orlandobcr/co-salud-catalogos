@@ -8,8 +8,12 @@ Strategy:
    total item count (visible as "Pág. 1 Items NNNNN"), columns.
 2. POST with `__EVENTTARGET=ctl00$cntContenido$dpggrvTablaReferencia$ddlPageSize`
    and `ddlPageSize=2000` to enlarge the grid.
-3. POST `__EVENTTARGET=ctl00$cntContenido$grvTablaReferencia` +
-   `__EVENTARGUMENT=Page$N` for each subsequent page.
+3. POST `__EVENTTARGET=ctl00$cntContenido$dpggrvTablaReferencia$imgNext` to walk
+   to each subsequent page. The grid has **no native pager**: navigation is driven
+   by the First/Prev/Next/Last buttons of the `dpggrvTablaReferencia` control.
+   `__EVENTARGUMENT=Page$N` on the grid is not a command it understands — ASP.NET
+   silently ignores it and re-renders page 1, so concatenating those responses
+   yields `page_size * N` rows of which only `page_size` are distinct.
 4. Parse `<table id="ctl00_cntContenido_grvTablaReferencia">` from each
    response with lxml.
 
@@ -19,6 +23,7 @@ IUM (34k).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -35,12 +40,19 @@ SISPRO_HOST = "web.sispro.gov.co"
 SISPRO_PATH = "/WebPublico/Consultas/ConsultarDetalleReferenciaBasica.aspx"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Anonimiz/0.1 (Kashport)"
+    "(KHTML, like Gecko) co-salud-catalogos/0.1"
 )
 
 GRID_ID = "ctl00_cntContenido_grvTablaReferencia"
 GRID_NAME = "ctl00$cntContenido$grvTablaReferencia"
-PAGE_SIZE_NAME = "ctl00$cntContenido$dpggrvTablaReferencia$ddlPageSize"
+
+# El grid no pagina solo: lo hace el control `dpggrvTablaReferencia`, que expone
+# el selector de tamaño de página y los botones First/Prev/Next/Last.
+PAGER_ID = "ctl00_cntContenido_dpggrvTablaReferencia"
+PAGER_NAME = "ctl00$cntContenido$dpggrvTablaReferencia"
+PAGE_SIZE_NAME = f"{PAGER_NAME}$ddlPageSize"
+NEXT_NAME = f"{PAGER_NAME}$imgNext"
+NEXT_ID = f"{PAGER_ID}_imgNext"
 
 DEFAULT_PAGE_SIZE = 2000
 
@@ -52,6 +64,23 @@ class PageState:
     eventvalidation: str
     total_items: int | None
     columns: list[str]
+    page_index: int | None
+    has_next: bool
+
+
+class SisproPaginationError(RuntimeError):
+    """El paginador no avanzó y la respuesta repite una página ya descargada.
+
+    Abortar es deliberado: concatenar en silencio produjo catálogos con
+    `page_size * N` filas de las que sólo `page_size` eran distintas.
+    """
+
+
+def _batch_digest(rows: list[dict[str, Any]]) -> str:
+    h = hashlib.sha256()
+    for row in rows:
+        h.update(repr(sorted(row.items())).encode("utf-8"))
+    return h.hexdigest()
 
 
 def _build_url(code: str) -> str:
@@ -80,12 +109,24 @@ def _extract_state(tree) -> PageState:
         header_row = grid[0].xpath('.//tr[1]/th')
         cols = [th.text_content().strip() for th in header_row]
 
+    # El pager muestra "Pág. <n>"; el botón Next desaparece en la última página.
+    page_index = None
+    pi = tree.xpath(f'//*[@id="{PAGER_ID}"]//span[@class="lblPageIndex"]/text()')
+    if pi:
+        try:
+            page_index = int(pi[0].strip())
+        except ValueError:
+            page_index = None
+    has_next = bool(tree.xpath(f'//a[@id="{NEXT_ID}"]'))
+
     return PageState(
         viewstate=vs,
         viewstate_generator=vsg,
         eventvalidation=ev,
         total_items=total,
         columns=cols,
+        page_index=page_index,
+        has_next=has_next,
     )
 
 
@@ -174,28 +215,56 @@ def fetch_all(
         progress_cb(len(rows))
     all_rows = list(rows)
 
-    # ---- Step 4: paginate while there are more pages
-    if total and len(all_rows) < total:
-        page = 2
-        max_pages = (total + page_size - 1) // page_size
-        while page <= max_pages and len(all_rows) < total:
-            payload_page = {
-                **_base_payload(state, code),
-                "__EVENTTARGET": GRID_NAME,
-                "__EVENTARGUMENT": f"Page${page}",
-                PAGE_SIZE_NAME: str(page_size),
-            }
-            r = c.post(url, data=payload_page, headers=post_headers)
-            r.raise_for_status()
-            tree = lxml_html.fromstring(r.content)
-            state = _extract_state(tree)
-            rows = _parse_rows(tree, state.columns)
-            if not rows:
-                log.warning("sispro.empty_page", extra={"code": code, "page": page})
-                break
-            all_rows.extend(rows)
-            if progress_cb is not None:
-                progress_cb(len(all_rows))
-            page += 1
+    # ---- Step 4: walk the pager with Next until it runs out
+    seen_digests = {_batch_digest(rows)}
+    page = 1
+    # Cota dura: si el servidor nunca deja de ofrecer Next, no girar para siempre.
+    max_pages = ((total + page_size - 1) // page_size) if total else 10_000
+
+    while state.has_next and page < max_pages:
+        if total is not None and len(all_rows) >= total:
+            break
+        payload_page = {
+            **_base_payload(state, code),
+            "__EVENTTARGET": NEXT_NAME,
+            "__EVENTARGUMENT": "",
+            PAGE_SIZE_NAME: str(page_size),
+        }
+        r = c.post(url, data=payload_page, headers=post_headers)
+        r.raise_for_status()
+        tree = lxml_html.fromstring(r.content)
+        state = _extract_state(tree)
+        rows = _parse_rows(tree, state.columns)
+        if not rows:
+            log.warning("sispro.empty_page", extra={"code": code, "page": page + 1})
+            break
+        page += 1
+
+        # Guarda de integridad: el lote nuevo no puede repetir uno ya visto.
+        digest = _batch_digest(rows)
+        if digest in seen_digests:
+            raise SisproPaginationError(
+                f"{code}: la página {page} repite un lote ya descargado "
+                f"({len(rows)} filas). El paginador no avanzó; se aborta en vez "
+                f"de concatenar duplicados."
+            )
+        seen_digests.add(digest)
+
+        # El propio pager dice en qué página está: si no coincide, no avanzamos.
+        if state.page_index is not None and state.page_index != page:
+            raise SisproPaginationError(
+                f"{code}: se pidió avanzar a la página {page} pero el grid "
+                f"reporta estar en la {state.page_index}."
+            )
+
+        all_rows.extend(rows)
+        if progress_cb is not None:
+            progress_cb(len(all_rows))
+
+    if total is not None and len(all_rows) != total:
+        log.warning(
+            "sispro.count_mismatch",
+            extra={"code": code, "expected": total, "got": len(all_rows)},
+        )
 
     return all_rows, total
