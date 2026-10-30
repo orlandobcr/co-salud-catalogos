@@ -32,6 +32,7 @@ api      = [
 [dependency-groups]
 dev = [
     "ruff>=0.7",
+    "pytest>=8",
 ]
 
 [build-system]
@@ -40,6 +41,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sync_catalogos"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100

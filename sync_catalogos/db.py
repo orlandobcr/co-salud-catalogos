@@ -40,12 +40,13 @@ Sanitización de nombres:
     - Truncado a 63 chars (límite Postgres)
     - Dedup con sufijo _2, _3 si dos originales colapsan
 
-Estrategia de upsert: por catálogo, DELETE + bulk INSERT atómico en transacción.
-Idempotente.
+Estrategia de escritura: por catálogo, se llena una tabla de staging y se
+cambia por la viva con DROP + RENAME. Idempotente.
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
 from datetime import datetime, timezone
 from typing import Protocol
@@ -62,8 +63,18 @@ import os as _os
 # el spike de memoria por chunk. Configurable via env SALUD_DB_BATCH_SIZE.
 _BATCH_SIZE = int(_os.environ.get("SALUD_DB_BATCH_SIZE", "1000"))
 
-# Sufijo de la tabla de staging que usa el swap de `write_catalog_stream`.
+# Sufijo de la tabla de staging que usa el swap.
 _STAGE_SUFFIX = "__stage"
+
+# Caída máxima de filas que se acepta sin intervención frente a lo publicado
+# (0,5 = la mitad). Una caída mayor suele ser una descarga incompleta, no un
+# cambio real de la fuente. Configurable con SALUD_MAX_SHRINK; `--allow-shrink`
+# la desactiva para una corrida.
+_MAX_SHRINK = float(_os.environ.get("SALUD_MAX_SHRINK", "0.5"))
+
+
+class ShrinkGuardError(RuntimeError):
+    """El catálogo nuevo trae muchas menos filas que el publicado."""
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -152,33 +163,13 @@ class SqlSink:
             Column("table_name", String(80)),
             Column("schema_json", Text),  # JSON string con el schema inferido (audit)
         )
-        # Cache de Tables por catalog_name
-        self._tables: dict[str, "Table"] = {}
+        self.max_shrink: float | None = _MAX_SHRINK
 
     def ensure_schema(self) -> None:
         self._md_meta.create_all(self.engine)
 
-    def _build_catalog_table(self, catalog_name: str, schema: list[ColumnSpec]):
-        """Construye el objeto Table para un catálogo (sin crear DDL todavía)."""
-        from sqlalchemy import Column, Integer, MetaData, Table
-
-        table_name = sanitize_table_name(catalog_name)
-        if table_name in self._tables:
-            return self._tables[table_name], table_name
-
-        md = MetaData()
-        cols = [Column("_idx", Integer, primary_key=True)]
-        for spec in schema:
-            cols.append(Column(spec.name, _sql_type_for(spec), nullable=spec.nullable))
-        table = Table(table_name, md, *cols)
-        self._tables[table_name] = table
-        return table, table_name
-
     def _build_named_table(self, table_name: str, schema: list[ColumnSpec]):
-        """Igual que `_build_catalog_table` pero con nombre explícito y sin caché.
-
-        Se usa para la tabla de staging del swap, que es efímera.
-        """
+        """Objeto Table para la tabla de staging del swap (sin crear DDL)."""
         from sqlalchemy import Column, Integer, MetaData, Table
 
         cols = [Column("_idx", Integer, primary_key=True)]
@@ -187,60 +178,22 @@ class SqlSink:
         return Table(table_name, MetaData(), *cols)
 
     def write_catalog(self, catalog: CatalogFile, *, batch_size: int = _BATCH_SIZE) -> None:
-        import json
-        from sqlalchemy import delete, insert
+        """Escribe un catálogo que ya está entero en memoria.
+
+        Pasa por el mismo staging + swap que `write_catalog_stream`. Antes se
+        hacía DELETE + INSERT sobre la tabla existente, y como
+        `create(checkfirst=True)` no altera una tabla que ya existe, cualquier
+        cambio de tipo en la fuente (un texto donde antes sólo había números)
+        hacía fallar el INSERT y el catálogo dejaba de actualizarse.
+        """
         m = catalog.metadata
-        entries = catalog.entries or []
-        schema = infer_schema(entries) if entries else []
-        table_name = sanitize_table_name(m.name)
-
-        # Construir/cachear tabla y crear DDL si no existe
-        if entries:
-            table, table_name = self._build_catalog_table(m.name, schema)
-            # Crear DDL solo de esta tabla (no toca otras)
-            table.create(self.engine, checkfirst=True)
-
-        meta_row = {
-            "name": m.name,
-            "description": m.description or None,
-            "source": m.source,
-            "source_url": m.source_url or None,
-            "source_id": m.source_id,
-            "version": m.version,
-            "license": m.license or None,
-            "row_count": m.row_count if m.row_count is not None else len(entries),
-            "last_synced": _parse_iso(m.last_synced),
-            "sha256": m.sha256,
-            "notes": m.notes or None,
-            "table_name": table_name,
-            "schema_json": json.dumps(
-                [{"col": s.name, "from": s.original, "type": s.sql_type_name, "nullable": s.nullable} for s in schema],
-                ensure_ascii=False,
-            ) if schema else None,
-        }
-
-        with self.engine.begin() as conn:
-            # Upsert metadata
-            conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
-            conn.execute(insert(self.t_meta).values(**meta_row))
-
-            # Replace entries
-            if entries:
-                conn.execute(delete(table))
-                rows: list[dict] = []
-                for i, entry in enumerate(entries):
-                    if not isinstance(entry, dict):
-                        continue
-                    row = {"_idx": i}
-                    for spec in schema:
-                        raw = entry.get(spec.original)
-                        row[spec.name] = coerce_value(raw, spec.sql_type_name)
-                    rows.append(row)
-                    if len(rows) >= batch_size:
-                        conn.execute(insert(table), rows)
-                        rows.clear()
-                if rows:
-                    conn.execute(insert(table), rows)
+        entries = [e for e in (catalog.entries or []) if isinstance(e, dict)]
+        # Con la lista entera en memoria, el tipo se decide mirando todas las
+        # filas: así ninguna se anula en silencio por no encajar en la muestra.
+        schema = infer_schema(entries, type_sample_size=len(entries)) if entries else []
+        self._write_swapped(
+            m, [entries], schema, batch_size=batch_size, sha=m.sha256,
+        )
 
     def write_catalog_stream(
         self,
@@ -266,26 +219,9 @@ class SqlSink:
         fila pierde el dato en silencio — inaceptable. Con todas las columnas en
         TEXT no hay coerción posible que falle. En Postgres TEXT no tiene coste
         frente a VARCHAR.
-
-        La escritura va a una tabla de staging y al final se hace el swap con
-        DROP + RENAME. Dos razones:
-
-        - `create(checkfirst=True)` no altera una tabla existente, así que los
-          VARCHAR inferidos de datos viejos rechazarían valores nuevos más largos.
-        - Dropear la tabla viva al principio toma un ACCESS EXCLUSIVE que la deja
-          ilegible durante toda la descarga. Con el swap, ese lock dura lo que
-          tarda un RENAME.
         """
-        import itertools
-        import json
         from dataclasses import replace as _replace
 
-        from sqlalchemy import delete, insert
-
-        from .io import EntriesHasher
-
-        m = metadata
-        hasher = EntriesHasher()
         it = iter(pages)
 
         # Bufferear lo mínimo para inferir el esquema
@@ -302,8 +238,50 @@ class SqlSink:
             schema = [_replace(spec, sql_type_name="TEXT") for spec in schema]
         del sample
 
-        from sqlalchemy import text
+        return self._write_swapped(
+            metadata, itertools.chain(buffered, it), schema,
+            batch_size=batch_size, progress_cb=progress_cb,
+        )
 
+    def _previous_row_count(self, name: str) -> int | None:
+        from sqlalchemy import select
+
+        with self.engine.connect() as conn:
+            return conn.execute(
+                select(self.t_meta.c.row_count).where(self.t_meta.c.name == name)
+            ).scalar_one_or_none()
+
+    def _write_swapped(
+        self,
+        m,
+        pages,
+        schema: list[ColumnSpec],
+        *,
+        batch_size: int,
+        sha: str | None = None,
+        progress_cb=None,
+    ) -> tuple[int, str]:
+        """Llena una tabla de staging y la cambia por la viva en un solo paso.
+
+        Dos razones para no escribir sobre la tabla viva:
+
+        - `create(checkfirst=True)` no altera una tabla existente, así que los
+          tipos inferidos de datos viejos rechazarían los datos nuevos.
+        - Dropear la tabla viva al principio toma un ACCESS EXCLUSIVE que la deja
+          ilegible durante toda la descarga. Con el swap, ese lock dura lo que
+          tarda un RENAME.
+
+        Antes del swap se aplica la guarda de `max_shrink`: si el catálogo nuevo
+        trae muchas menos filas que el publicado, lo más probable es una
+        descarga incompleta, y se conserva lo que había.
+        """
+        import json
+
+        from sqlalchemy import delete, insert, text
+
+        from .io import EntriesHasher
+
+        hasher = EntriesHasher()
         table_name = sanitize_table_name(m.name)
         stage_name = table_name[: 63 - len(_STAGE_SUFFIX)] + _STAGE_SUFFIX
         stage = self._build_named_table(stage_name, schema) if schema else None
@@ -317,7 +295,7 @@ class SqlSink:
                 stage.create(conn)
             with self.engine.begin() as conn:
                 batch: list[dict] = []
-                for page in itertools.chain(buffered, it):
+                for page in pages:
                     for entry in page:
                         if not isinstance(entry, dict):
                             continue
@@ -340,7 +318,18 @@ class SqlSink:
                 if progress_cb is not None:
                     progress_cb(n)
 
-        sha = hasher.hexdigest()
+        previous = self._previous_row_count(m.name)
+        if self.max_shrink is not None and previous and n < previous * (1 - self.max_shrink):
+            if stage is not None:
+                with self.engine.begin() as conn:
+                    stage.drop(conn, checkfirst=True)
+            raise ShrinkGuardError(
+                f"{m.name}: {n} filas nuevas contra {previous} publicadas "
+                f"(caída mayor a {self.max_shrink:.0%}); se conserva lo publicado. "
+                "Use --allow-shrink si la reducción es real."
+            )
+
+        sha = sha or hasher.hexdigest()
         meta_row = {
             "name": m.name,
             "description": m.description or None,
@@ -377,12 +366,10 @@ class SqlSink:
                 conn.execute(text(f'ALTER TABLE "{stage_name}" RENAME TO "{table_name}"'))
                 # El índice de la PK conserva el nombre de staging; sin renombrarlo,
                 # la siguiente corrida choca al recrear la tabla de staging.
-                try:
+                if self.engine.dialect.name == "postgresql":
                     conn.execute(text(
                         f'ALTER INDEX "{stage_name}_pkey" RENAME TO "{table_name}_pkey"'
                     ))
-                except Exception:  # motores sin ALTER INDEX (sqlite, mysql)
-                    log.debug("db.pkey_rename_skipped", extra={"table": table_name})
             conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
             conn.execute(insert(self.t_meta).values(**meta_row))
 

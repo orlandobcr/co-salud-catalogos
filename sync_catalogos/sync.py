@@ -79,6 +79,25 @@ def _build_metadata(src: CatalogSource, entries: list, version: str | None) -> C
     )
 
 
+def _parse_note(report: dict) -> str:
+    """Resumen legible del reporte de parseo, para las notas del catálogo."""
+    rejected = report.get("rejected") or []
+    if not (report.get("repaired") or report.get("padded") or rejected):
+        return ""
+    parts = [
+        f"Parseo: {report.get('repaired', 0)} filas reparadas (separadores dentro de un campo)",
+        f"{report.get('padded', 0)} completadas al final",
+        f"{len(rejected)} omitidas por venir truncadas o ilegibles desde la fuente",
+    ]
+    note = ", ".join(parts) + "."
+    if rejected:
+        # Sólo números de línea: las notas se publican en el API y el texto de
+        # la fila puede traer el nombre de un profesional.
+        lines = ", ".join(str(r["line"]) for r in rejected[:20])
+        note += f" Líneas omitidas del export: {lines}."
+    return note
+
+
 def sync_one(
     src: CatalogSource,
     *,
@@ -166,6 +185,7 @@ def sync_one(
             "streamed": True,
         }
 
+    parse_report: dict = {}
     try:
         if src.kind == "socrata":
             assert src.socrata_dataset_id
@@ -191,6 +211,7 @@ def sync_one(
                 src.reps_endpoint,
                 progress_cb=_progress if verbose else None,
                 use_proxy=use_proxy,
+                report=parse_report,
             )
             version = _now_iso()
         else:
@@ -208,6 +229,9 @@ def sync_one(
         sys.stdout.write("\n")
 
     metadata = _build_metadata(src, entries, version)
+    parse_note = _parse_note(parse_report)
+    if parse_note:
+        metadata.notes = f"{metadata.notes}\n\n{parse_note}".strip()
     catalog = CatalogFile(metadata=metadata, entries=entries)
 
     if dry_run:
@@ -243,8 +267,15 @@ def sync_one(
     }
     if write_json:
         result["path"] = str(out_path)
+    if parse_note:
+        result["parse"] = {k: v for k, v in parse_report.items() if k != "rejected"} | {
+            "rejected": len(parse_report.get("rejected") or []),
+        }
     if db_error:
+        # Un catálogo que no llegó a la base no está sincronizado, aunque la
+        # descarga haya ido bien: cuenta como error para el resumen y el exit code.
         result["db_error"] = db_error
+        result["error"] = f"db: {db_error}"
     return result
 
 
@@ -312,6 +343,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     ap.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help=(
+            "Acepta que un catálogo quede con muchas menos filas que las "
+            "publicadas. Sin este flag, una caída mayor a SALUD_MAX_SHRINK "
+            "(0,5 por defecto) se trata como descarga incompleta y no se publica."
+        ),
+    )
+    ap.add_argument(
         "--no-write-json",
         dest="no_write_json",
         action="store_true",
@@ -334,6 +374,8 @@ def main(argv: list[str] | None = None) -> int:
         from .db import make_sink
         db_sink = make_sink(args.db)
         db_sink.ensure_schema()
+        if args.allow_shrink and hasattr(db_sink, "max_shrink"):
+            db_sink.max_shrink = None
 
     if args.list:
         print(f"  {'NAME':30s}  {'KIND':13s}  {'SOURCE_ID':30s}  PATH")

@@ -241,8 +241,14 @@ def _varchar(max_len: int) -> str:
     return "TEXT"
 
 
-def infer_schema(entries: list[dict]) -> list[ColumnSpec]:
-    """Infiere el schema completo de un catálogo desde sus entries."""
+def infer_schema(entries: list[dict], *, type_sample_size: int = 1000) -> list[ColumnSpec]:
+    """Infiere el schema completo de un catálogo desde sus entries.
+
+    `type_sample_size` acota cuántos valores no vacíos por columna se miran para
+    decidir el tipo. Con la lista entera en memoria conviene pasar `len(entries)`:
+    si el tipo sale de una muestra y una fila posterior no encaja, `coerce_value`
+    la convierte en NULL sin avisar.
+    """
     if not entries:
         return []
 
@@ -263,7 +269,9 @@ def infer_schema(entries: list[dict]) -> list[ColumnSpec]:
     for original in all_keys:
         sql_name = name_map[original]
         col_values = [e.get(original) for e in entries if isinstance(e, dict)]
-        sql_type, max_len, _nullable_inferred = infer_column_type(col_values)
+        sql_type, max_len, _nullable_inferred = infer_column_type(
+            col_values, type_sample_size=type_sample_size
+        )
         # Siempre permitir NULL: los catálogos pueden tener filas con campos
         # faltantes o vacíos, y no queremos rechazar bulk inserts por NOT NULL.
         specs.append(ColumnSpec(
