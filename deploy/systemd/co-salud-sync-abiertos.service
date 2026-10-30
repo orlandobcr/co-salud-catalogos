@@ -1,0 +1,16 @@
+[Unit]
+Description=co-salud-catalogos: sync semanal de Datos Abiertos + REPS y corte
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cosalud
+WorkingDirectory=/opt/co-salud-catalogos
+EnvironmentFile=/opt/co-salud-catalogos/.env
+# Con 1 GB de RAM, lotes chicos para que reps_servicios no tumbe el server.
+Environment=SALUD_DB_BATCH_SIZE=100
+ExecStart=/opt/co-salud-catalogos/deploy/sync-abiertos.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h

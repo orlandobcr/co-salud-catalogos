@@ -240,18 +240,47 @@ WantedBy=multi-user.target
 - ✅ `.env` chmod 600 propiedad de `cosalud`
 - ✅ CORS limitado al dominio de producción
 
-## Cron pendiente (a configurar bajo supervisión)
+## Sync semanal (systemd timer)
 
-Recomendado (NO automatizado todavía):
-```cron
-# Lunes 03:00 UTC — REPS Habilitación (semanal)
-0 3 * * 1 cd /opt/co-salud-catalogos && sudo -u cosalud bash -c 'set -a; source .env; set +a; .venv/bin/python -m sync_catalogos.sync --all --kind reps_export --db "$SALUD_API_DB_URL" --no-write-json' >> /var/log/co-salud-catalogos/sync.log 2>&1
+Activado el 30-oct-2026 con autorización de Andres. Sólo fuentes abiertas: SISPRO
+sigue siendo manual con `--i-have-permission` y bitácora.
 
-# Lunes 04:00 UTC — Datos Abiertos (semanal)
-0 4 * * 1 cd /opt/co-salud-catalogos && sudo -u cosalud bash -c 'set -a; source .env; set +a; .venv/bin/python -m sync_catalogos.sync --all --kind socrata --db "$SALUD_API_DB_URL" --no-write-json' >> /var/log/co-salud-catalogos/sync.log 2>&1
+| | |
+|---|---|
+| Cuándo | Lunes 03:00 hora Colombia (`Mon 08:00 UTC`, hasta 15 min de jitter) |
+| Qué | Datos Abiertos + REPS → Postgres, y después un corte en `/var/lib/co-salud/cortes` |
+| Script | `deploy/sync-abiertos.sh` |
+| Units | `deploy/systemd/co-salud-sync-abiertos.{service,timer}` |
 
-# SISPRO: NUNCA en cron — solo manual con --i-have-permission documentado
+Instalación:
+
+```bash
+cp /opt/co-salud-catalogos/deploy/systemd/co-salud-sync-abiertos.* /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now co-salud-sync-abiertos.timer
+systemctl list-timers co-salud-sync-abiertos.timer
 ```
+
+Operación:
+
+```bash
+systemctl start co-salud-sync-abiertos.service      # corrida a mano, mismo camino que el timer
+journalctl -u co-salud-sync-abiertos.service -n 200  # resultado de la última corrida
+```
+
+Protecciones del sync (desde 30-oct-2026):
+
+- **Staging + swap también en la escritura normal.** Un cambio de tipo en la
+  fuente ya no rompe el sync; la tabla se recrea con el esquema nuevo.
+- **Guarda de caída de filas.** Si un catálogo trae menos de la mitad de las filas
+  publicadas (`SALUD_MAX_SHRINK`, 0,5 por defecto), no se publica y el sync falla.
+  `--allow-shrink` la desactiva para una corrida, cuando la reducción es real.
+- **Errores de base cuentan como error**: el exit code ya no es 0 si un catálogo
+  no llegó a Postgres.
+- **Parseo del REPS reparado**: filas con varios correos separados por `;` o con
+  un salto de línea dentro de un campo se recomponen usando las columnas de formato
+  fijo como anclas; las que vienen truncadas desde la fuente se omiten y quedan
+  contadas en las notas del catálogo.
 
 ## Smoke tests rápidos
 
