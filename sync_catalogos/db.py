@@ -66,6 +66,19 @@ _BATCH_SIZE = int(_os.environ.get("SALUD_DB_BATCH_SIZE", "1000"))
 # Sufijo de la tabla de staging que usa el swap.
 _STAGE_SUFFIX = "__stage"
 
+# Postgres corta los identificadores a 63 caracteres.
+_PG_MAX_IDENT = 63
+
+
+def _pkey_name(table_name: str) -> str:
+    """Nombre del índice de la PK, recortado igual que lo haría Postgres.
+
+    Con `f"{tabla}_pkey"` a secas, en tablas de nombre largo el nombre pasaba
+    de 63 caracteres: Postgres lo recortaba a otro distinto, el ALTER INDEX
+    no encontraba el índice y abortaba la transacción del swap.
+    """
+    return table_name[: _PG_MAX_IDENT - len("_pkey")] + "_pkey"
+
 # Caída máxima de filas que se acepta sin intervención frente a lo publicado
 # (0,5 = la mitad). Una caída mayor suele ser una descarga incompleta, no un
 # cambio real de la fuente. Configurable con SALUD_MAX_SHRINK; `--allow-shrink`
@@ -170,12 +183,13 @@ class SqlSink:
 
     def _build_named_table(self, table_name: str, schema: list[ColumnSpec]):
         """Objeto Table para la tabla de staging del swap (sin crear DDL)."""
-        from sqlalchemy import Column, Integer, MetaData, Table
+        from sqlalchemy import Column, Integer, MetaData, PrimaryKeyConstraint, Table
 
-        cols = [Column("_idx", Integer, primary_key=True)]
+        cols = [Column("_idx", Integer, nullable=False)]
         for spec in schema:
             cols.append(Column(spec.name, _sql_type_for(spec), nullable=spec.nullable))
-        return Table(table_name, MetaData(), *cols)
+        pk = PrimaryKeyConstraint("_idx", name=_pkey_name(table_name))
+        return Table(table_name, MetaData(), *cols, pk)
 
     def write_catalog(self, catalog: CatalogFile, *, batch_size: int = _BATCH_SIZE) -> None:
         """Escribe un catálogo que ya está entero en memoria.
@@ -283,7 +297,7 @@ class SqlSink:
 
         hasher = EntriesHasher()
         table_name = sanitize_table_name(m.name)
-        stage_name = table_name[: 63 - len(_STAGE_SUFFIX)] + _STAGE_SUFFIX
+        stage_name = table_name[: _PG_MAX_IDENT - len(_STAGE_SUFFIX)] + _STAGE_SUFFIX
         stage = self._build_named_table(stage_name, schema) if schema else None
 
         n = 0
@@ -368,7 +382,8 @@ class SqlSink:
                 # la siguiente corrida choca al recrear la tabla de staging.
                 if self.engine.dialect.name == "postgresql":
                     conn.execute(text(
-                        f'ALTER INDEX "{stage_name}_pkey" RENAME TO "{table_name}_pkey"'
+                        f'ALTER INDEX "{_pkey_name(stage_name)}" '
+                        f'RENAME TO "{_pkey_name(table_name)}"'
                     ))
             conn.execute(delete(self.t_meta).where(self.t_meta.c.name == m.name))
             conn.execute(insert(self.t_meta).values(**meta_row))

@@ -1,7 +1,9 @@
 """Escritura a la base: cambio de tipos entre corridas y guarda de caída de filas."""
 
+import os
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from sync_catalogos.db import ShrinkGuardError, SqlSink
 from sync_catalogos.schema import CatalogFile, CatalogMetadata
@@ -16,11 +18,30 @@ def catalog(entries, name="prueba"):
     return CatalogFile(metadata=meta, entries=entries)
 
 
-@pytest.fixture
-def sink(tmp_path):
-    s = SqlSink(f"sqlite:///{tmp_path / 'salud.db'}")
+# sqlite no aplica el límite de 63 caracteres de Postgres a los nombres, así
+# que los tests corren también contra Postgres si hay uno disponible.
+_PG_URL = os.environ.get("SALUD_TEST_PG_URL")
+
+
+def _drop_all(s):
+    with s.engine.begin() as c:
+        for t in inspect(c).get_table_names():
+            c.execute(text(f'DROP TABLE "{t}"'))
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+def sink(request, tmp_path):
+    if request.param == "sqlite":
+        s = SqlSink(f"sqlite:///{tmp_path / 'salud.db'}")
+    elif _PG_URL:
+        s = SqlSink(_PG_URL)
+        _drop_all(s)
+    else:
+        pytest.skip("SALUD_TEST_PG_URL no definido")
     s.ensure_schema()
     yield s
+    if request.param == "postgresql":
+        _drop_all(s)
     s.close()
 
 
@@ -76,3 +97,19 @@ def test_stream_y_normal_comparten_swap(sink):
     assert [r["a"] for r in rows_of(sink)] == ["1", "2", "3"]
     sink.write_catalog(catalog([{"a": "x"}] * 3))
     assert [r["a"] for r in rows_of(sink)] == ["x", "x", "x"]
+
+
+def test_nombre_largo_se_actualiza_dos_veces(sink):
+    # El nombre de la tabla, el de staging y el de sus PK pasan de 63
+    # caracteres. Antes el ALTER INDEX no encontraba la PK y abortaba el swap.
+    nombre = "sispro_lce_responsables_envio_informacion_por_tipo_poblacion_especial"
+    tabla = "salud_" + nombre
+    for valor in ("x", "y"):
+        sink.write_catalog_stream(catalog([], name=nombre).metadata, [[{"a": valor}]])
+        sink.write_catalog(catalog([{"a": valor}], name=nombre))
+    with sink.engine.connect() as c:
+        guardada = c.execute(
+            text("SELECT table_name FROM salud_catalog_metadata WHERE name = :n"), {"n": nombre}
+        ).scalar_one()
+    assert [r["a"] for r in rows_of(sink, guardada)] == ["y"]
+    assert len(guardada) <= 63 and tabla.startswith(guardada)
